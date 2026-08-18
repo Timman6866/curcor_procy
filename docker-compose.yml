@@ -1,0 +1,95 @@
+services:
+  cursor-openai-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cursor-openai-proxy:local
+    container_name: cursor-openai-proxy
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      # Local Cursor agent executors do not run inside this container.
+      CURSOR_RUNTIME: ${CURSOR_RUNTIME:-cloud}
+      CURSOR_CWD: /app/.scratch
+    ports:
+      # Publish to the host. Omit this block if the proxy is only reached on a custom network.
+      - "${PORT:-8787}:8787"
+    volumes:
+      - proxy-scratch:/app/.scratch
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    # --- Custom Docker networks ---
+    #
+    # Default: Compose creates an implicit project network and attaches this service to it.
+    # Other containers on the same Compose project can reach the proxy at:
+    #   http://cursor-openai-proxy:8787/v1
+    #
+    # Attach to one or more named networks (uncomment and edit as needed):
+    #
+    # networks:
+    #   - cursor-proxy
+    #   - hermes-internal
+    #
+    # Example: join an existing external network created by another stack
+    # (e.g. Hermes, Open WebUI, a reverse proxy). The network must already exist:
+    #
+    # networks:
+    #   - cursor-proxy          # internal network defined below
+    #   - hermes-internal:
+    #       name: hermes_default   # actual Docker network name from `docker network ls`
+    #       external: true
+    #
+    # Example: fixed subnet for firewall rules or VPN routing:
+    #
+    # networks:
+    #   - cursor-proxy
+    #
+    # networks:
+    #   cursor-proxy:
+    #     driver: bridge
+    #     ipam:
+    #       config:
+    #         - subnet: 172.28.0.0/16
+    #
+    # Example: reverse proxy (Traefik/Caddy/nginx) on the same network — no host port publish:
+    #
+    # ports: []   # remove host binding above
+    # networks:
+    #   - proxy-edge
+    # labels:
+    #   - traefik.enable=true
+    #   - traefik.http.routers.cursor-proxy.rule=Host(`cursor-proxy.local`)
+
+# Uncomment when using the `networks:` block on the service above.
+#
+# networks:
+#   cursor-proxy:
+#     name: cursor-openai-proxy
+#     driver: bridge
+#
+#   # Pre-existing network from another compose project or `docker network create`
+#   hermes-internal:
+#     name: hermes_default
+#     external: true
+#
+#   # Shared edge network for ingress containers
+#   proxy-edge:
+#     name: proxy-edge
+#     external: true
+
+volumes:
+  proxy-scratch:
