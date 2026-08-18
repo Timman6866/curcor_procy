@@ -1,0 +1,16 @@
+name: cursor-proxy-smoke
+
+agents:
+  dev:
+    description: "Inspects this repo using built-in tools and the workspace MCP server."
+    tools: ["read", "write", "bash", "glob", "grep", "workspace-fs"]
+
+steps:
+  - id: inspect
+    agent: dev
+    instructions: |
+      You are in the cursor-openai-proxy repo.
+      1. List the top-level files and directories.
+      2. Read package.json and summarize the project in 3-5 bullets.
+      3. Mention whether src/reasoning.ts exists.
+      Keep the answer concise.

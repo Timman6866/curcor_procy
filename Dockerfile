@@ -22,8 +22,9 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
 
-RUN mkdir -p /app/.scratch && chown -R node:node /app
+RUN mkdir -p /app/.scratch && chown -R node:node /app && chmod +x /app/scripts/docker-entrypoint.sh
 USER node
 
 EXPOSE 8787
@@ -31,4 +32,4 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:8787/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["node", "dist/index.js"]
+CMD ["/app/scripts/docker-entrypoint.sh"]

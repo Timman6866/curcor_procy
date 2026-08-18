@@ -18,6 +18,8 @@ export interface Config {
   runtime: Runtime;
   cwd: string;
   toolsPolicy: ToolsPolicy;
+  adminUsername: string;
+  adminPassword: string | undefined;
 }
 
 function requiredEnv(name: string): string {
@@ -47,6 +49,8 @@ export function loadConfig(): Config {
     runtime,
     cwd,
     toolsPolicy: parseToolsPolicy(process.env.CURSOR_TOOLS),
+    adminUsername: process.env.ADMIN_USERNAME?.trim() || "admin",
+    adminPassword: process.env.ADMIN_PASSWORD?.trim() || undefined,
   };
 }
 

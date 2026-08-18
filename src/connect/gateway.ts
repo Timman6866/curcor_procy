@@ -1,6 +1,5 @@
-import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { Config } from "../config.ts";
+import type { ConfigProvider } from "../config-store.ts";
 import { connectStreamHeaders, ConnectTransformer, invokeConnectRpc } from "./transformer.ts";
 
 const CONNECT_PATHS = [
@@ -13,10 +12,6 @@ const CONNECT_PATHS = [
   "/sdk.v1.SdkAgentService/Send",
 ] as const;
 
-export function createConnectAuthToken(config: Config): string {
-  return config.connectAuthToken ?? randomBytes(32).toString("base64url");
-}
-
 function requestBody(raw: unknown): Buffer | Record<string, unknown> {
   if (Buffer.isBuffer(raw)) return raw;
   if (raw && typeof raw === "object") return raw as Record<string, unknown>;
@@ -24,8 +19,8 @@ function requestBody(raw: unknown): Buffer | Record<string, unknown> {
   return {};
 }
 
-export function registerConnectGateway(app: FastifyInstance, config: Config, authToken: string) {
-  const transformer = new ConnectTransformer(config, authToken);
+export function registerConnectGateway(app: FastifyInstance, configStore: ConfigProvider) {
+  const transformer = new ConnectTransformer(configStore);
 
   for (const path of CONNECT_PATHS) {
     app.post(path, async (request, reply) => {

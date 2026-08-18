@@ -1,6 +1,6 @@
 import { Agent, Cursor, CursorAgentError } from "@cursor/sdk";
 import { buildAgentOptions, parseAgentRequestOptions } from "../agent-options.ts";
-import type { Config } from "../config.ts";
+import type { ConfigProvider } from "../config-store.ts";
 import { resolveModel } from "../normalize.ts";
 import { connectError, connectErrorFromUnknown } from "./errors.ts";
 import {
@@ -20,7 +20,8 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
-function readApiKey(config: Config, body: unknown, fallback?: string): string {
+function readApiKey(configStore: ConfigProvider, body: unknown, fallback?: string): string {
+  const config = configStore.get();
   const root = asRecord(body);
   const options = asRecord(root?.options);
   const apiKey = typeof options?.apiKey === "string" ? options.apiKey.trim() : "";
@@ -61,20 +62,19 @@ function sdkMessageEnvelope(event: { type: string }) {
 }
 
 export class ConnectTransformer {
-  readonly authToken: string;
   private readonly sessions = new AgentSessionStore();
 
-  constructor(
-    private readonly config: Config,
-    authToken: string,
-  ) {
-    this.authToken = authToken;
+  constructor(private readonly configStore: ConfigProvider) {}
+
+  private get config() {
+    return this.configStore.get();
   }
 
   assertBridgeAuth(authorization: string | undefined) {
+    const expected = this.configStore.getConnectAuthToken();
     const match = authorization?.match(/^Bearer\s+(.+)$/i);
     const token = match?.[1]?.trim();
-    if (!token || token !== this.authToken) {
+    if (!token || token !== expected) {
       throw Object.assign(new Error("Unauthorized"), { statusCode: 401 });
     }
   }
@@ -92,7 +92,7 @@ export class ConnectTransformer {
   }
 
   async handleMe(body: unknown) {
-    const apiKey = readApiKey(this.config, body);
+    const apiKey = readApiKey(this.configStore, body);
     if (!apiKey) {
       throw Object.assign(new Error("API key is required for cloud catalog calls."), { statusCode: 401 });
     }
@@ -110,7 +110,7 @@ export class ConnectTransformer {
   }
 
   async handleListModels(body: unknown) {
-    const apiKey = readApiKey(this.config, body);
+    const apiKey = readApiKey(this.configStore, body);
     if (!apiKey) {
       throw Object.assign(new Error("API key is required for cloud catalog calls."), { statusCode: 401 });
     }
@@ -133,7 +133,7 @@ export class ConnectTransformer {
       throw Object.assign(new Error("options is required"), { statusCode: 400 });
     }
 
-    const apiKey = readApiKey(this.config, body);
+    const apiKey = readApiKey(this.configStore, body);
     const modelId = resolveModel(
       typeof asRecord(options.model)?.id === "string" ? (asRecord(options.model)?.id as string) : undefined,
       this.config.defaultModel,

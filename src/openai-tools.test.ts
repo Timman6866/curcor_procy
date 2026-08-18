@@ -1,8 +1,41 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseOpenAiTools } from "./openai-tools.ts";
+import { buildFunctionCallingAgentOptions, parseOpenAiTools } from "./openai-tools.ts";
+import type { Config } from "./config.ts";
 import { normalizeBody } from "./normalize.ts";
 import { chatCompletion, streamToolCallChunks } from "./openai-format.ts";
+
+const baseConfig: Config = {
+  port: 8787,
+  host: "127.0.0.1",
+  cursorApiKey: "test-key",
+  proxyApiKey: undefined,
+  connectAuthToken: undefined,
+  defaultModel: "composer-2.5",
+  runtime: "local",
+  cwd: "/tmp/scratch",
+  toolsPolicy: "none",
+};
+
+test("function calling keeps MCP enabled for custom OpenAI tools", () => {
+  const pending = { calls: null };
+  const options = buildFunctionCallingAgentOptions(
+    baseConfig,
+    "key",
+    "composer-2.5",
+    [
+      {
+        type: "function",
+        function: { name: "bash", parameters: { type: "object", properties: {} } },
+      },
+    ],
+    pending,
+  );
+
+  assert.deepEqual(options.tools, ["mcp"]);
+  assert.equal(Object.keys(options.local?.customTools ?? {}).length, 1);
+  assert.equal(options.local?.customTools?.bash?.description, undefined);
+});
 
 test("parses OpenAI function tools from chat completion body", () => {
   const tools = parseOpenAiTools([

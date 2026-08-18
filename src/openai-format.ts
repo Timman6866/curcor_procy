@@ -19,6 +19,7 @@ export function chatCompletion(params: {
   created: number;
   model: string;
   content: string | null;
+  reasoningContent?: string | null;
   toolCalls?: Array<{
     id: string;
     type: "function";
@@ -31,6 +32,9 @@ export function chatCompletion(params: {
     role: "assistant",
     content: params.content,
   };
+  if (params.reasoningContent) {
+    message.reasoning_content = params.reasoningContent;
+  }
   if (params.toolCalls && params.toolCalls.length > 0) {
     message.content = params.content;
     message.tool_calls = params.toolCalls;

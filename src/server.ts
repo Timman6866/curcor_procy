@@ -1,6 +1,8 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
-import { createConnectAuthToken, registerConnectGateway } from "./connect/gateway.ts";
-import { authorize, type Config } from "./config.ts";
+import { registerAdminRoutes, registerRequestLogging } from "./admin.ts";
+import { registerConnectGateway } from "./connect/gateway.ts";
+import { authorize } from "./config.ts";
+import type { ConfigProvider } from "./config-store.ts";
 import { complete, listModels, streamComplete } from "./cursor-backend.ts";
 import { normalizeBody } from "./normalize.ts";
 import {
@@ -13,15 +15,17 @@ import {
   streamToolCallChunks,
 } from "./openai-format.ts";
 
-export function buildServer(config: Config) {
+export function buildServer(configStore: ConfigProvider) {
   const app = Fastify({ logger: true });
-  const connectAuthToken = createConnectAuthToken(config);
-  registerConnectGateway(app, config, connectAuthToken);
+  registerConnectGateway(app, configStore);
+  registerRequestLogging(app);
+  registerAdminRoutes(app, configStore);
 
   app.get("/health", async () => ({ ok: true }));
 
   app.get("/v1/models", async (request, reply) => {
     try {
+      const config = configStore.get();
       const apiKey = authorize(config, request.headers.authorization);
       const ids = await listModels(config, apiKey);
       return modelsList(ids);
@@ -31,34 +35,36 @@ export function buildServer(config: Config) {
   });
 
   app.post("/v1/chat/completions", async (request, reply) => {
-    return handleCompletion(config, request, reply, "chat");
+    return handleCompletion(configStore, request, reply, "chat");
   });
 
   app.post("/v1/responses", async (request, reply) => {
-    return handleCompletion(config, request, reply, "responses");
+    return handleCompletion(configStore, request, reply, "responses");
   });
 
-  return { app, connectAuthToken };
+  return { app };
 }
 
 async function handleCompletion(
-  config: Config,
+  configStore: ConfigProvider,
   request: FastifyRequest,
   reply: FastifyReply,
   flavor: "chat" | "responses",
 ) {
   try {
+    const config = configStore.get();
     const apiKey = authorize(config, request.headers.authorization);
     const normalized = normalizeBody(request.body);
 
     if (!normalized.stream) {
       const result = await complete(config, apiKey, normalized);
       const created = Math.floor(Date.now() / 1000);
+      const responseModel = normalized.displayModel ?? result.model;
       if (flavor === "responses") {
         return responseObject({
           id: newId("resp"),
           created,
-          model: result.model,
+          model: responseModel,
           content: result.content ?? "",
           usage: result.usage,
         });
@@ -66,30 +72,33 @@ async function handleCompletion(
       return chatCompletion({
         id: newId("chatcmpl"),
         created,
-        model: result.model,
+        model: responseModel,
         content: result.content,
+        reasoningContent: result.reasoningContent,
         toolCalls: result.toolCalls,
         finishReason: result.finishReason,
         usage: result.usage,
       });
     }
 
-    return await streamReply(config, apiKey, normalized, reply, flavor);
+    return await streamReply(configStore, apiKey, normalized, reply, flavor);
   } catch (error) {
     return sendError(reply, error);
   }
 }
 
 async function streamReply(
-  config: Config,
+  configStore: ConfigProvider,
   apiKey: string,
   normalized: ReturnType<typeof normalizeBody>,
   reply: FastifyReply,
   flavor: "chat" | "responses",
 ) {
+  const config = configStore.get();
   const id = flavor === "responses" ? newId("resp") : newId("chatcmpl");
   const created = Math.floor(Date.now() / 1000);
   const abort = new AbortController();
+  const responseModel = normalized.displayModel ?? normalized.model ?? config.defaultModel;
 
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -107,12 +116,16 @@ async function streamReply(
 
   try {
     if (flavor === "chat") {
+      const initialDelta: Record<string, unknown> = { role: "assistant", content: "" };
+      if (normalized.reasoning.enabled) {
+        initialDelta.reasoning_content = "";
+      }
       writeEvent(
         chatChunk({
           id,
           created,
-          model: normalized.model ?? config.defaultModel,
-          delta: { role: "assistant", content: "" },
+          model: responseModel,
+          delta: initialDelta,
           finishReason: null,
         }),
       );
@@ -132,8 +145,20 @@ async function streamReply(
           chatChunk({
             id,
             created,
-            model: normalized.model ?? config.defaultModel,
+            model: responseModel,
             delta: { content: text },
+            finishReason: null,
+          }),
+        );
+      },
+      onReasoning: (text) => {
+        if (flavor !== "chat" || !normalized.reasoning.enabled) return;
+        writeEvent(
+          chatChunk({
+            id,
+            created,
+            model: responseModel,
+            delta: { reasoning_content: text },
             finishReason: null,
           }),
         );
@@ -143,7 +168,7 @@ async function streamReply(
         for (const chunk of streamToolCallChunks({
           id,
           created,
-          model: normalized.model ?? config.defaultModel,
+          model: responseModel,
           toolCalls,
         })) {
           writeEvent(chunk);
@@ -155,7 +180,7 @@ async function streamReply(
       writeEvent(responseObject({
         id,
         created,
-        model: result.model,
+        model: responseModel,
         content: result.content ?? "",
         usage: result.usage,
       }));
@@ -164,7 +189,7 @@ async function streamReply(
         chatChunk({
           id,
           created,
-          model: result.model,
+          model: responseModel,
           delta: {},
           finishReason: "stop",
           usage: normalized.includeUsage ? result.usage : undefined,

@@ -11,14 +11,23 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      # Local Cursor agent executors do not run inside this container.
-      CURSOR_RUNTIME: ${CURSOR_RUNTIME:-cloud}
-      CURSOR_CWD: /app/.scratch
+      # local needs the mounted Cursor agent executor (see volumes below).
+      # Use cloud if you omit the cursor-agent mount.
+      CURSOR_RUNTIME: ${CURSOR_RUNTIME:-local}
+      CURSOR_CWD: /workspace
+      CURSOR_TOOLS: ${CURSOR_TOOLS:-full}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     ports:
       # Publish to the host. Omit this block if the proxy is only reached on a custom network.
       - "${PORT:-8787}:8787"
     volumes:
       - proxy-scratch:/app/.scratch
+      # Host Cursor agent install — required for local tool execution in-container.
+      - ${CURSOR_AGENT_DIR:-/home/docker-user/.local/share/cursor-agent}:/opt/cursor-agent:ro
+      # Project workspace for read/edit/shell tools. Override CURSOR_WORKSPACE as needed.
+      - ${CURSOR_WORKSPACE:-.}:/workspace:rw
+    entrypoint: ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
     healthcheck:
       test:
         [
@@ -39,9 +48,8 @@ services:
     #   http://cursor-openai-proxy:8787/v1
     #
     # Attach to one or more named networks (uncomment and edit as needed):
-    #
-    # networks:
-    #   - cursor-proxy
+    networks:
+      - docker_default
     #   - hermes-internal
     #
     # Example: join an existing external network created by another stack
@@ -74,8 +82,11 @@ services:
     #   - traefik.enable=true
     #   - traefik.http.routers.cursor-proxy.rule=Host(`cursor-proxy.local`)
 
-# Uncomment when using the `networks:` block on the service above.
-#
+networks:
+  docker_default:
+    name: docker_default
+    external: true
+
 # networks:
 #   cursor-proxy:
 #     name: cursor-openai-proxy

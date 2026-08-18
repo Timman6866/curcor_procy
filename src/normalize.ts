@@ -23,13 +23,16 @@ export interface NormalizedImage {
 }
 
 import { parseOpenAiTools, type OpenAiFunctionTool } from "./openai-tools.ts";
+import { parseReasoningOptions, stripThinkingModelSuffix, type ReasoningOptions } from "./reasoning.ts";
 
 export interface NormalizedRequest {
   model: string | undefined;
+  displayModel: string | undefined;
   stream: boolean;
   includeUsage: boolean;
   messages: NormalizedMessage[];
   tools: OpenAiFunctionTool[];
+  reasoning: ReasoningOptions;
 }
 
 const PLACEHOLDER_MODELS = new Set([
@@ -47,8 +50,9 @@ const PLACEHOLDER_MODELS = new Set([
 
 export function resolveModel(requested: string | undefined, fallback: string): string {
   const model = requested?.trim();
-  if (!model || PLACEHOLDER_MODELS.has(model)) return fallback;
-  return model;
+  const stripped = model ? stripThinkingModelSuffix(model) : undefined;
+  if (!stripped || PLACEHOLDER_MODELS.has(stripped)) return fallback;
+  return stripped;
 }
 
 export function normalizeBody(body: unknown): NormalizedRequest {
@@ -61,12 +65,16 @@ export function normalizeBody(body: unknown): NormalizedRequest {
     });
   }
 
+  const requestedModel = typeof raw.model === "string" ? raw.model : undefined;
+
   return {
-    model: typeof raw.model === "string" ? raw.model : undefined,
+    model: requestedModel,
+    displayModel: requestedModel,
     stream: raw.stream === true,
     includeUsage: isRecord(raw.stream_options) && raw.stream_options.include_usage === true,
     messages,
     tools: parseOpenAiTools(raw.tools),
+    reasoning: parseReasoningOptions(requestedModel, raw),
   };
 }
 
@@ -80,7 +88,7 @@ export function toPrompt(messages: NormalizedMessage[]): string {
 }
 
 export function collectImages(messages: NormalizedMessage[]): NormalizedImage[] {
-  return messages.flatMap((message) => message.images);
+  return messages.flatMap((message) => message.images ?? []);
 }
 
 function extractMessages(raw: Record<string, unknown>): NormalizedMessage[] {

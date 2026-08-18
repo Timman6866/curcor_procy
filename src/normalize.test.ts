@@ -11,6 +11,7 @@ test("normalizes chat completions messages", () => {
     ],
   });
   assert.equal(req.model, "composer-2.5");
+  assert.equal(req.displayModel, "composer-2.5");
   assert.equal(req.messages.length, 2);
   assert.equal(toPrompt(req.messages), "SYSTEM:\nBe brief.\n\nUSER:\nHi");
 });
@@ -27,6 +28,17 @@ test("normalizes Responses API input arrays", () => {
 
 test("rejects empty bodies", () => {
   assert.throws(() => normalizeBody({}), /messages or input/);
+});
+
+test("maps thinking model ids and enables reasoning", () => {
+  const req = normalizeBody({
+    model: "composer-2.5-thinking",
+    messages: [{ role: "user", content: "Think" }],
+  });
+  assert.equal(req.model, "composer-2.5-thinking");
+  assert.equal(req.displayModel, "composer-2.5-thinking");
+  assert.equal(req.reasoning.enabled, true);
+  assert.equal(resolveModel(req.model, "composer-2.5"), "composer-2.5");
 });
 
 test("maps placeholder OpenAI model ids to the default", () => {

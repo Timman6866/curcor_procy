@@ -1,5 +1,5 @@
 import type { SDKCustomTool, SDKJsonValue } from "@cursor/sdk";
-import { buildAgentOptions } from "./agent-options.ts";
+import { buildAgentOptions, type ParsedAgentRequestOptions } from "./agent-options.ts";
 import type { Config } from "./config.ts";
 import { newId } from "./openai-format.ts";
 
@@ -94,6 +94,7 @@ export function buildFunctionCallingAgentOptions(
   model: string,
   tools: OpenAiFunctionTool[],
   pending: { calls: OpenAiToolCall[] | null },
+  request: ParsedAgentRequestOptions = {},
 ) {
   if (config.runtime !== "local") {
     throw Object.assign(
@@ -102,7 +103,10 @@ export function buildFunctionCallingAgentOptions(
     );
   }
 
-  const options = buildAgentOptions(config, apiKey, model, { tools: "none" });
+  // OpenAI client tools are SDK customTools (custom-user-tools MCP). The model
+  // invokes them via GetMcpTools/CallMcpTool, so we must keep the "mcp"
+  // capability enabled even when Cursor built-ins are disabled.
+  const options = buildAgentOptions(config, apiKey, model, { ...request, tools: ["mcp"] });
   options.local = {
     ...options.local,
     cwd: options.local?.cwd ?? config.cwd,

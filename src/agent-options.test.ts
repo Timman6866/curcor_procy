@@ -47,6 +47,16 @@ test("does not pass tools arrays to cloud agents", () => {
   assert.deepEqual(options.cloud?.repos, []);
 });
 
+test("passes reasoning params when enabled", () => {
+  const options = buildAgentOptions(baseConfig, "key", "composer-2.5", {
+    reasoning: { enabled: true, effort: "high" },
+  });
+  assert.deepEqual(options.model, {
+    id: "composer-2.5",
+    params: [{ id: "reasoning_effort", value: "high" }],
+  });
+});
+
 test("parses connect CreateAgent tool options", () => {
   const parsed = parseAgentRequestOptions(baseConfig, {
     local: { cwd: ["/repo"] },

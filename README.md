@@ -155,6 +155,18 @@ If the model chooses a tool, the response has `finish_reason: "tool_calls"` and 
 
 When `tools` is omitted, the proxy uses Cursor's built-in agent tools instead of OpenAI function calling.
 
+## Reasoning (selectable)
+
+Reasoning is **off by default**. Enable it per request in either of these ways:
+
+| Selector | Example | Effect |
+| --- | --- | --- |
+| Thinking model id | `composer-2.5-thinking` | Enables reasoning and streams `reasoning_content` |
+| `reasoning_effort` | `"reasoning_effort": "high"` | Enables reasoning at the requested effort |
+| Disable on thinking id | `"reasoning_effort": "none"` | Forces reasoning off even for `*-thinking` models |
+
+`/v1/models` lists both base and `*-thinking` variants. OpenCode clients should declare `reasoning: true` and `interleaved.field: "reasoning_content"` on thinking model entries in `opencode.json`.
+
 ## Behavior
 
 - OpenAI REST requests are one-shot agent runs. Send the full `messages` / `input` history each time.
