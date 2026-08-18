@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseToolsPolicy, type ToolsPolicy } from "./tools-policy.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, "..");
@@ -16,6 +17,7 @@ export interface Config {
   defaultModel: string;
   runtime: Runtime;
   cwd: string;
+  toolsPolicy: ToolsPolicy;
 }
 
 function requiredEnv(name: string): string {
@@ -44,6 +46,7 @@ export function loadConfig(): Config {
     defaultModel: process.env.DEFAULT_MODEL?.trim() || "composer-2.5",
     runtime,
     cwd,
+    toolsPolicy: parseToolsPolicy(process.env.CURSOR_TOOLS),
   };
 }
 

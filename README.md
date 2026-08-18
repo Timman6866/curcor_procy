@@ -4,7 +4,23 @@ OpenAI-compatible REST server that forwards chat traffic to Cursor models throug
 
 It also exposes Cursor's official **`sdk.v1` Connect/protobuf** surface (the same wire contract as [`cursor-sdk-bridge`](https://github.com/cursor/sdk-bridge)), so non-TypeScript clients can speak native Cursor agent RPCs without embedding the SDK.
 
-Cursor does not expose a raw `/v1/chat/completions` inference API. This proxy maps that contract onto local (or cloud) SDK agent runs with **no tools**, so the model can only return text.
+Cursor does not expose a raw `/v1/chat/completions` inference API. This proxy maps that contract onto Cursor SDK agent runs with the **full default tool suite** (read, edit, shell, grep, MCP, etc.) unless you restrict tools via env or Connect options.
+
+## Tools
+
+By default, agents get Cursor's full built-in toolset — the same capabilities as Agent mode in the IDE (`read`, `edit`, `grep`, `glob`, `shell`, `mcp`, `webSearch`, …).
+
+| Control | Effect |
+| --- | --- |
+| `CURSOR_TOOLS=full` (default) | Full suite |
+| `CURSOR_TOOLS=none` | Text-only (`tools: []`, **local only**) |
+| `CURSOR_TOOLS=read,grep,shell` | Allowlist (**local only**) |
+| Connect `CreateAgent` `options.tools.names` | Per-agent override (local only) |
+| Connect `options.mcpServers` | Attach MCP servers to an agent |
+
+Cloud agents always use Cursor's default cloud toolset — the SDK does not accept explicit `tools` arrays on cloud runs.
+
+Tool activity appears on the Connect `Send` stream as `tool_call`, `thinking`, and `interactionUpdate` events. OpenAI REST can now return standard `tool_calls` when you pass a `tools` array (local runtime only); send `role: "tool"` messages on the follow-up request with the tool output.
 
 ## Two wire formats
 
@@ -15,7 +31,7 @@ Cursor does not expose a raw `/v1/chat/completions` inference API. This proxy ma
 
 **Important:** Cursor IDE chat uses a different, undocumented stack (`agent.v1` / `aiserver.v1` over HTTP/2 to `*.cursor.sh`). That is **not** what this server implements. The supported protobuf path is **`sdk.v1`** via the SDK / SDK bridge. See [Cursor SDK Bridge docs](https://cursor.com/docs/sdk/bridge).
 
-Classic gRPC over HTTP/2 will not connect. Use Connect clients or framed `application/connect+json` POSTs.
+Classic gRPC over HTTP/2 will not connect. Use plain JSON POSTs with `Content-Type: application/json`. Streaming `Send` responses are newline-delimited JSON (NDJSON).
 
 ## Endpoints
 
@@ -90,12 +106,59 @@ curl -s http://127.0.0.1:8787/sdk.v1.SdkAgentService/CreateAgent \
   -H "Authorization: Bearer $CONNECT_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"options\":{\"model\":{\"id\":\"composer-2.5\"},\"apiKey\":\"$CURSOR_API_KEY\",\"local\":{\"cwd\":[\"$PWD/.scratch\"]}}}"
+
+# 3) Send (streams NDJSON lines: sdkMessage, result, done)
+curl -sN http://127.0.0.1:8787/sdk.v1.SdkAgentService/Send \
+  -H "Authorization: Bearer $CONNECT_AUTH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"agentId\":\"$AGENT_ID\",\"message\":{\"text\":\"Say hello.\"}}"
 ```
+
+## OpenAI function calling
+
+Pass standard OpenAI `tools` on `/v1/chat/completions`. Requires **`CURSOR_RUNTIME=local`**.
+
+```bash
+curl http://127.0.0.1:8787/v1/chat/completions \
+  -H "Authorization: Bearer $CURSOR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "composer-2.5",
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": { "city": { "type": "string" } },
+          "required": ["city"]
+        }
+      }
+    }],
+    "messages": [{ "role": "user", "content": "Weather in Boston?" }]
+  }'
+```
+
+If the model chooses a tool, the response has `finish_reason: "tool_calls"` and a `tool_calls` array. Execute the function client-side, then continue:
+
+```json
+{
+  "messages": [
+    { "role": "user", "content": "Weather in Boston?" },
+    { "role": "assistant", "tool_calls": [{ "...": "..." }] },
+    { "role": "tool", "tool_call_id": "call_...", "content": "72F and sunny" }
+  ],
+  "tools": [{ "...": "..." }]
+}
+```
+
+When `tools` is omitted, the proxy uses Cursor's built-in agent tools instead of OpenAI function calling.
 
 ## Behavior
 
-- Each request is a one-shot run. Send the full `messages` / `input` history every time.
-- Built-in tools are disabled (`tools: []`). The model cannot edit files or run shell.
+- OpenAI REST requests are one-shot agent runs. Send the full `messages` / `input` history each time.
+- Agents use the full Cursor tool suite by default; set `CURSOR_TOOLS=none` for text-only local runs.
 - Local runtime needs the Cursor agent executor on this machine. Use `CURSOR_RUNTIME=cloud` if you only have an API key.
 - Token counts are passed through when the SDK reports them; otherwise they are `0`.
 

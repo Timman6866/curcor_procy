@@ -18,9 +18,24 @@ export function chatCompletion(params: {
   id: string;
   created: number;
   model: string;
-  content: string;
+  content: string | null;
+  toolCalls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+  finishReason: "stop" | "tool_calls";
   usage: TokenCounts;
 }) {
+  const message: Record<string, unknown> = {
+    role: "assistant",
+    content: params.content,
+  };
+  if (params.toolCalls && params.toolCalls.length > 0) {
+    message.content = params.content;
+    message.tool_calls = params.toolCalls;
+  }
+
   return {
     id: params.id,
     object: "chat.completion",
@@ -29,8 +44,8 @@ export function chatCompletion(params: {
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: params.content },
-        finish_reason: "stop",
+        message,
+        finish_reason: params.finishReason,
       },
     ],
     usage: {
@@ -39,6 +54,69 @@ export function chatCompletion(params: {
       total_tokens: params.usage.totalTokens,
     },
   };
+}
+
+export function streamToolCallChunks(params: {
+  id: string;
+  created: number;
+  model: string;
+  toolCalls: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+  usage?: TokenCounts;
+}) {
+  const chunks = [
+    chatChunk({
+      id: params.id,
+      created: params.created,
+      model: params.model,
+      delta: {
+        role: "assistant",
+        content: null,
+        tool_calls: params.toolCalls.map((call, index) => ({
+          index,
+          id: call.id,
+          type: call.type,
+          function: { name: call.function.name, arguments: "" },
+        })),
+      },
+      finishReason: null,
+    }),
+  ];
+
+  for (const [index, call] of params.toolCalls.entries()) {
+    chunks.push(
+      chatChunk({
+        id: params.id,
+        created: params.created,
+        model: params.model,
+        delta: {
+          tool_calls: [
+            {
+              index,
+              function: { arguments: call.function.arguments },
+            },
+          ],
+        },
+        finishReason: null,
+      }),
+    );
+  }
+
+  chunks.push(
+    chatChunk({
+      id: params.id,
+      created: params.created,
+      model: params.model,
+      delta: {},
+      finishReason: "tool_calls",
+      usage: params.usage,
+    }),
+  );
+
+  return chunks;
 }
 
 export function chatChunk(params: {

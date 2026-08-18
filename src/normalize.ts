@@ -1,9 +1,20 @@
 export type ChatRole = "system" | "user" | "assistant" | "tool" | "developer";
 
+export interface NormalizedToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 export interface NormalizedMessage {
   role: ChatRole;
   content: string;
   images: NormalizedImage[];
+  toolCallId?: string;
+  toolCalls: NormalizedToolCall[];
 }
 
 export interface NormalizedImage {
@@ -11,11 +22,14 @@ export interface NormalizedImage {
   mimeType: string;
 }
 
+import { parseOpenAiTools, type OpenAiFunctionTool } from "./openai-tools.ts";
+
 export interface NormalizedRequest {
   model: string | undefined;
   stream: boolean;
   includeUsage: boolean;
   messages: NormalizedMessage[];
+  tools: OpenAiFunctionTool[];
 }
 
 const PLACEHOLDER_MODELS = new Set([
@@ -52,6 +66,7 @@ export function normalizeBody(body: unknown): NormalizedRequest {
     stream: raw.stream === true,
     includeUsage: isRecord(raw.stream_options) && raw.stream_options.include_usage === true,
     messages,
+    tools: parseOpenAiTools(raw.tools),
   };
 }
 
@@ -80,14 +95,14 @@ function extractMessages(raw: Record<string, unknown>): NormalizedMessage[] {
 
 function flattenInput(input: unknown): NormalizedMessage[] {
   if (typeof input === "string") {
-    return [{ role: "user", content: input, images: [] }];
+    return [{ role: "user", content: input, images: [], toolCalls: [] }];
   }
   if (!Array.isArray(input)) return [];
 
   const messages: NormalizedMessage[] = [];
   for (const item of input) {
     if (typeof item === "string") {
-      messages.push({ role: "user", content: item, images: [] });
+      messages.push({ role: "user", content: item, images: [], toolCalls: [] });
       continue;
     }
     if (!isRecord(item)) continue;
@@ -103,7 +118,7 @@ function flattenInput(input: unknown): NormalizedMessage[] {
     }
 
     if (item.type === "input_text" && typeof item.text === "string") {
-      messages.push({ role: "user", content: item.text, images: [] });
+      messages.push({ role: "user", content: item.text, images: [], toolCalls: [] });
     }
   }
   return messages;
@@ -113,8 +128,36 @@ function normalizeMessage(value: unknown): NormalizedMessage[] {
   if (!isRecord(value)) return [];
   const role = asRole(value.role);
   const { text, images } = flattenContent(value.content ?? value.text);
-  if (!text && images.length === 0) return [];
-  return [{ role, content: text, images }];
+  const toolCalls = normalizeToolCalls(value.tool_calls);
+  const toolCallId = typeof value.tool_call_id === "string" ? value.tool_call_id : undefined;
+
+  if (role === "tool") {
+    if (!text && !toolCallId) return [];
+    return [{ role, content: text, images, toolCallId, toolCalls: [] }];
+  }
+
+  if (!text && images.length === 0 && toolCalls.length === 0) return [];
+  return [{ role, content: text, images, toolCalls }];
+}
+
+function normalizeToolCalls(value: unknown): NormalizedToolCall[] {
+  if (!Array.isArray(value)) return [];
+  const calls: NormalizedToolCall[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (item.type !== "function") continue;
+    const fn = isRecord(item.function) ? item.function : undefined;
+    if (!fn || typeof fn.name !== "string") continue;
+    calls.push({
+      id: typeof item.id === "string" ? item.id : "",
+      type: "function",
+      function: {
+        name: fn.name,
+        arguments: typeof fn.arguments === "string" ? fn.arguments : JSON.stringify(fn.arguments ?? {}),
+      },
+    });
+  }
+  return calls;
 }
 
 function flattenContent(content: unknown): { text: string; images: NormalizedImage[] } {

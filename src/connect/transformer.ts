@@ -1,14 +1,13 @@
 import { Agent, Cursor, CursorAgentError } from "@cursor/sdk";
-import { buildAgentOptions } from "../agent-options.ts";
+import { buildAgentOptions, parseAgentRequestOptions } from "../agent-options.ts";
 import type { Config } from "../config.ts";
 import { resolveModel } from "../normalize.ts";
 import { connectError, connectErrorFromUnknown } from "./errors.ts";
 import {
-  CONNECT_JSON,
   CONNECT_PROTO_VERSION,
-  decodeConnectJsonBody,
-  encodeConnectEndStream,
-  encodeConnectJsonFrame,
+  decodeJsonBody,
+  encodeJsonLine,
+  JSON_CONTENT_TYPE,
 } from "./framing.ts";
 import { AgentSessionStore } from "./session-store.ts";
 
@@ -88,7 +87,7 @@ export class ConnectTransformer {
     return {
       bridgeVersion: BRIDGE_VERSION,
       protocolVersion: PROTOCOL_VERSION,
-      capabilities: ["openai-rest", "sdk.v1", "connect-json"],
+      capabilities: ["openai-rest", "sdk.v1", "json", "ndjson-stream"],
     };
   }
 
@@ -140,7 +139,14 @@ export class ConnectTransformer {
       this.config.defaultModel,
     );
 
-    const agent = await Agent.create(buildAgentOptions(this.config, apiKey, modelId));
+    const agent = await Agent.create(
+      buildAgentOptions(
+        this.config,
+        apiKey,
+        modelId,
+        parseAgentRequestOptions(this.config, options),
+      ),
+    );
     this.sessions.set(agent.agentId, {
       agent,
       apiKey,
@@ -166,8 +172,8 @@ export class ConnectTransformer {
     return {};
   }
 
-  async handleSend(rawBody: Buffer, write: (chunk: Buffer) => void) {
-    const body = asRecord(decodeConnectJsonBody(rawBody));
+  async handleSend(bodyInput: Buffer | Record<string, unknown>, write: (chunk: Buffer) => void) {
+    const body = asRecord(decodeJsonBody(bodyInput));
     const agentId = typeof body?.agentId === "string" ? body.agentId : "";
     const message = asRecord(body?.message);
     const text = typeof message?.text === "string" ? message.text : "";
@@ -181,31 +187,54 @@ export class ConnectTransformer {
       throw Object.assign(new Error(`Unknown agent ${agentId}`), { statusCode: 404 });
     }
 
+    const sendOptions = asRecord(body?.options);
+    const streamDeltas = sendOptions?.enableDeltas !== false;
+    const streamSteps = sendOptions?.enableSteps === true;
+
     const run = await session.agent.send(text, {
-      onDelta: async ({ update }) => {
-        if (update.type === "text-delta" && typeof update.text === "string" && update.text.length > 0) {
-          write(
-            encodeConnectJsonFrame({
-              interactionUpdate: {
-                type: update.type,
-                update,
-              },
-            }),
-          );
-        }
-      },
+      onDelta: streamDeltas
+        ? async ({ update }) => {
+            write(
+              encodeJsonLine({
+                interactionUpdate: {
+                  type: update.type,
+                  update,
+                },
+              }),
+            );
+          }
+        : undefined,
+      onStep: streamSteps
+        ? async ({ step }) => {
+            write(
+              encodeJsonLine({
+                step: {
+                  type: step.type,
+                  step,
+                },
+              }),
+            );
+          }
+        : undefined,
     });
 
     for await (const event of run.stream()) {
-      if (event.type === "assistant" || event.type === "thinking" || event.type === "tool_call") {
-        write(encodeConnectJsonFrame(sdkMessageEnvelope(event)));
+      if (
+        event.type === "assistant" ||
+        event.type === "thinking" ||
+        event.type === "tool_call" ||
+        event.type === "system" ||
+        event.type === "status" ||
+        event.type === "usage"
+      ) {
+        write(encodeJsonLine(sdkMessageEnvelope(event)));
       }
     }
 
     const result = await run.wait();
     if (result.status === "error") {
       write(
-        encodeConnectJsonFrame({
+        encodeJsonLine({
           sdkMessage: {
             type: "status",
             message: {
@@ -221,7 +250,7 @@ export class ConnectTransformer {
     }
 
     write(
-      encodeConnectJsonFrame({
+      encodeJsonLine({
         result: {
           agentId: run.agentId,
           runId: run.id,
@@ -239,21 +268,20 @@ export class ConnectTransformer {
       }),
     );
     write(
-      encodeConnectJsonFrame({
+      encodeJsonLine({
         done: {
           agentId: run.agentId,
           runId: run.id,
         },
       }),
     );
-    write(encodeConnectEndStream());
   }
 }
 
 export function connectUnaryResponse(body: unknown) {
   return {
     headers: {
-      "content-type": "application/json",
+      "content-type": JSON_CONTENT_TYPE,
       "connect-protocol-version": CONNECT_PROTO_VERSION,
     },
     body,
@@ -262,10 +290,11 @@ export function connectUnaryResponse(body: unknown) {
 
 export function connectStreamHeaders() {
   return {
-    "content-type": CONNECT_JSON,
+    "content-type": JSON_CONTENT_TYPE,
     "connect-protocol-version": CONNECT_PROTO_VERSION,
     "cache-control": "no-cache",
     connection: "keep-alive",
+    "transfer-encoding": "chunked",
   };
 }
 
@@ -273,13 +302,13 @@ export async function invokeConnectRpc(
   transformer: ConnectTransformer,
   path: string,
   authorization: string | undefined,
-  rawBody: Buffer | undefined,
+  rawBody: Buffer | Record<string, unknown> | undefined,
   write: (chunk: Buffer) => void,
 ) {
   transformer.assertBridgeAuth(authorization);
 
   try {
-    const body = decodeConnectJsonBody(rawBody);
+    const body = decodeJsonBody(rawBody);
 
     switch (path) {
       case "/sdk.v1.SdkBridgeControlService/Ping":
@@ -295,7 +324,7 @@ export async function invokeConnectRpc(
       case "/sdk.v1.SdkAgentService/CloseAgent":
         return connectUnaryResponse(await transformer.handleCloseAgent(body));
       case "/sdk.v1.SdkAgentService/Send": {
-        await transformer.handleSend(rawBody ?? Buffer.alloc(0), write);
+        await transformer.handleSend(rawBody ?? {}, write);
         return { stream: true as const };
       }
       default:

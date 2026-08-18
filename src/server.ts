@@ -10,6 +10,7 @@ import {
   newId,
   openaiError,
   responseObject,
+  streamToolCallChunks,
 } from "./openai-format.ts";
 
 export function buildServer(config: Config) {
@@ -58,7 +59,7 @@ async function handleCompletion(
           id: newId("resp"),
           created,
           model: result.model,
-          content: result.content,
+          content: result.content ?? "",
           usage: result.usage,
         });
       }
@@ -67,6 +68,8 @@ async function handleCompletion(
         created,
         model: result.model,
         content: result.content,
+        toolCalls: result.toolCalls,
+        finishReason: result.finishReason,
         usage: result.usage,
       });
     }
@@ -135,6 +138,17 @@ async function streamReply(
           }),
         );
       },
+      onToolCalls: (toolCalls) => {
+        if (flavor !== "chat") return;
+        for (const chunk of streamToolCallChunks({
+          id,
+          created,
+          model: normalized.model ?? config.defaultModel,
+          toolCalls,
+        })) {
+          writeEvent(chunk);
+        }
+      },
     });
 
     if (flavor === "responses") {
@@ -142,10 +156,10 @@ async function streamReply(
         id,
         created,
         model: result.model,
-        content: result.content,
+        content: result.content ?? "",
         usage: result.usage,
       }));
-    } else {
+    } else if (result.finishReason !== "tool_calls") {
       writeEvent(
         chatChunk({
           id,

@@ -17,16 +17,19 @@ export function createConnectAuthToken(config: Config): string {
   return config.connectAuthToken ?? randomBytes(32).toString("base64url");
 }
 
+function requestBody(raw: unknown): Buffer | Record<string, unknown> {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string") return Buffer.from(raw, "utf8");
+  return {};
+}
+
 export function registerConnectGateway(app: FastifyInstance, config: Config, authToken: string) {
   const transformer = new ConnectTransformer(config, authToken);
 
-  app.addContentTypeParser("application/connect+json", { parseAs: "buffer" }, (_request, body, done) => {
-    done(null, body);
-  });
-
   for (const path of CONNECT_PATHS) {
     app.post(path, async (request, reply) => {
-      const rawBody = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
+      const rawBody = requestBody(request.body);
 
       if (path === "/sdk.v1.SdkAgentService/Send") {
         reply.hijack();
@@ -43,7 +46,7 @@ export function registerConnectGateway(app: FastifyInstance, config: Config, aut
           );
         } catch (error) {
           const message = error instanceof Error ? error.message : "Stream failed";
-          reply.raw.write(Buffer.from(JSON.stringify({ code: "internal", message }), "utf8"));
+          reply.raw.write(Buffer.from(`${JSON.stringify({ code: "internal", message })}\n`, "utf8"));
         } finally {
           reply.raw.end();
         }
