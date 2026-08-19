@@ -10,7 +10,7 @@
     "start:prod": "node dist/index.js",
     "build": "tsc -p tsconfig.json --noEmit",
     "build:prod": "node esbuild.config.mjs",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "tsx --test src/*.test.ts src/**/*.test.ts",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",

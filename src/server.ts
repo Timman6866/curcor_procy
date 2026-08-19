@@ -23,11 +23,18 @@ export function buildServer(configStore: ConfigProvider) {
 
   app.get("/health", async () => ({ ok: true }));
 
+  // SvelteKit apps poll this for deploy detection; return a stable stub to avoid 404 noise.
+  app.get("/_app/version.json", async (_request, reply) => {
+    return reply
+      .header("Cache-Control", "no-cache")
+      .send({ version: "cursor-openai-proxy" });
+  });
+
   app.get("/v1/models", async (request, reply) => {
     try {
       const config = configStore.get();
-      const apiKey = authorize(config, request.headers.authorization);
-      const ids = await listModels(config, apiKey);
+      const apiKey = authorize(config, request.headers);
+      const ids = configStore.filterModelIds(await listModels(config, apiKey));
       return modelsList(ids);
     } catch (error) {
       return sendError(reply, error);
@@ -53,7 +60,7 @@ async function handleCompletion(
 ) {
   try {
     const config = configStore.get();
-    const apiKey = authorize(config, request.headers.authorization);
+    const apiKey = authorize(config, request.headers);
     const normalized = normalizeBody(request.body);
 
     if (!normalized.stream) {

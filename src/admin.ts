@@ -8,7 +8,8 @@ import {
 } from "./admin-auth.ts";
 import { ADMIN_PAGE_HTML } from "./admin-page.ts";
 import { complete, listModels } from "./cursor-backend.ts";
-import type { Config } from "./config.ts";
+import { normalizeBody } from "./normalize.ts";
+import { authorize, type Config } from "./config.ts";
 import type { ConfigStore, SettingsUpdate } from "./config-store.ts";
 import { listRequestLog, recordRequest } from "./request-log.ts";
 import { AVAILABLE_TOOLS, toolsPolicyToView } from "./tools-policy.ts";
@@ -22,6 +23,9 @@ interface ChatTestBody {
   model?: string;
   message?: string;
   stream?: boolean;
+  fast?: boolean;
+  model_speed?: string;
+  reasoning_effort?: string;
 }
 
 function adminEnabled(config: Config): boolean {
@@ -176,6 +180,24 @@ export function registerAdminRoutes(
     };
   });
 
+  app.post("/admin/api/verify-rest-key", async (request, reply) => {
+    if (!requireAdmin(request, reply, configStore)) return;
+
+    const config = configStore.get();
+    const body = (request.body ?? {}) as { key?: string };
+    const key = body.key?.trim();
+    if (!key) {
+      return reply.code(400).send({ error: "key is required" });
+    }
+
+    try {
+      authorize(config, { authorization: `Bearer ${key}` });
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
+  });
+
   app.patch("/admin/api/settings", async (request, reply) => {
     if (!requireAdmin(request, reply, configStore)) return;
 
@@ -202,14 +224,49 @@ export function registerAdminRoutes(
 
     const config = configStore.get();
     const ids = await listModels(config, config.cursorApiKey);
+    const disabled = new Set(configStore.getDisabledModels());
+    const data = ids.map((id) => ({
+      id,
+      object: "model",
+      created: 0,
+      owned_by: "cursor",
+      enabled: !disabled.has(id),
+    }));
+
     return {
       object: "list",
-      data: ids.map((id) => ({
-        id,
-        object: "model",
-        created: 0,
-        owned_by: "cursor",
-      })),
+      totalCount: data.length,
+      visibleCount: data.filter((model) => model.enabled).length,
+      data,
+    };
+  });
+
+  app.patch("/admin/api/models", async (request, reply) => {
+    if (!requireAdmin(request, reply, configStore)) return;
+
+    const body = (request.body ?? {}) as { disabledModels?: unknown };
+    if (!Array.isArray(body.disabledModels)) {
+      return reply.code(400).send({ error: "disabledModels array is required" });
+    }
+
+    const disabledModels = configStore.setDisabledModels(body.disabledModels);
+    const config = configStore.get();
+    const ids = await listModels(config, config.cursorApiKey);
+    const disabled = new Set(disabledModels);
+    const data = ids.map((id) => ({
+      id,
+      object: "model",
+      created: 0,
+      owned_by: "cursor",
+      enabled: !disabled.has(id),
+    }));
+
+    return {
+      ok: true,
+      disabledModels,
+      totalCount: data.length,
+      visibleCount: data.filter((model) => model.enabled).length,
+      data,
     };
   });
 
@@ -229,23 +286,25 @@ export function registerAdminRoutes(
     }
 
     const model = body.model?.trim() || config.defaultModel;
-    const result = await complete(config, config.cursorApiKey, {
+    const normalized = normalizeBody({
       model,
-      displayModel: model,
-      stream: false,
-      messages: [{ role: "user", content: message, images: [], toolCalls: [] }],
-      tools: [],
-      reasoning: { enabled: false },
-      includeUsage: true,
+      messages: [{ role: "user", content: message }],
+      fast: body.fast,
+      model_speed: body.model_speed,
+      reasoning_effort: body.reasoning_effort,
     });
+    const result = await complete(config, config.cursorApiKey, normalized);
 
     return {
-      model: result.model,
+      model: normalized.displayModel ?? result.model,
+      resolvedModel: result.model,
       finishReason: result.finishReason,
       content: result.content,
       reasoningContent: result.reasoningContent,
       toolCalls: result.toolCalls,
       usage: result.usage,
+      fast: normalized.fast,
+      reasoning: normalized.reasoning,
     };
   });
 }

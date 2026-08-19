@@ -112,6 +112,11 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       background: rgba(245, 196, 81, 0.08); color: var(--warn); font-size: 0.9rem;
     }
     .success { color: var(--ok); min-height: 1.2em; }
+    .models-table-wrap { max-height: 420px; overflow: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 12px; }
+    .models-table-wrap table { width: 100%; border-collapse: collapse; }
+    .models-table-wrap th, .models-table-wrap td { padding: 10px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+    .models-table-wrap tr.disabled td { opacity: 0.55; }
+    .models-table-wrap tr:last-child td { border-bottom: none; }
     @media (max-width: 700px) {
       .hero { flex-direction: column; }
       .kv { grid-template-columns: 1fr; }
@@ -212,6 +217,15 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
             <div class="field">
               <label>Proxy API key <span id="sourceProxyKey" class="pill source-pill"></span></label>
               <input id="settingsProxyKey" type="password" placeholder="Leave blank to keep current" autocomplete="new-password" />
+              <p class="hint">When set, clients send this as Bearer or <code>x-api-key</code>. Set the same value in <code>PROXY_API_KEY</code> for OpenCode/Zenflow.</p>
+              <div class="row" style="gap:8px; align-items:end">
+                <label class="stack" style="flex:1; gap:6px">
+                  <span class="label">Test a client key</span>
+                  <input id="verifyRestKey" type="password" placeholder="Paste key to verify" autocomplete="off" />
+                </label>
+                <button class="secondary" id="verifyRestKeyBtn" type="button">Verify</button>
+              </div>
+              <p id="verifyRestKeyResult" class="hint"></p>
               <label class="hint"><input id="clearProxyKey" type="checkbox" /> Clear proxy API key (clients can use Cursor key)</label>
             </div>
             <div class="field">
@@ -248,17 +262,46 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
     </section>
 
     <section class="panel card" data-panel="models">
-      <div class="row" style="justify-content:space-between; margin-top:0">
-        <h2 style="margin:0">Available models</h2>
-        <button class="secondary" id="refreshModels" type="button">Refresh</button>
+      <div class="row" style="justify-content:space-between; align-items:flex-start; margin-top:0; gap:12px; flex-wrap:wrap">
+        <div>
+          <h2 style="margin:0">Available models</h2>
+          <p id="modelsSummary" class="hint" style="margin-top:6px">Choose which models appear in /v1/models for OpenCode and Zenflow.</p>
+        </div>
+        <div class="row" style="gap:8px; flex-wrap:wrap">
+          <button class="secondary" id="modelsEnableAll" type="button">Enable all</button>
+          <button class="secondary" id="modelsComposerOnly" type="button">Composer only</button>
+          <button id="saveModels" type="button">Save visibility</button>
+          <button class="secondary" id="refreshModels" type="button">Refresh</button>
+        </div>
       </div>
-      <div id="modelsTable" style="margin-top:12px"></div>
+      <div id="modelsNotice" class="success" style="margin-top:8px"></div>
+      <div id="modelsTable" class="models-table-wrap"></div>
     </section>
 
     <section class="panel card" data-panel="tester">
       <h2>Chat smoke test</h2>
       <div class="stack">
         <select id="testModel"></select>
+        <div class="row" style="gap:12px; flex-wrap:wrap">
+          <label class="stack" style="flex:1; min-width:160px; gap:6px">
+            <span class="label">Speed</span>
+            <select id="testSpeed">
+              <option value="">From model id / default</option>
+              <option value="fast">Fast</option>
+              <option value="standard">Standard</option>
+            </select>
+          </label>
+          <label class="stack" style="flex:1; min-width:160px; gap:6px">
+            <span class="label">Reasoning effort</span>
+            <select id="testReasoning">
+              <option value="">Off / from model id</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="none">Force off</option>
+            </select>
+          </label>
+        </div>
         <textarea id="testPrompt" placeholder="Ask the model something simple…">Say "proxy-ok" and nothing else.</textarea>
         <div class="row">
           <button id="runTest" type="button">Run test</button>
@@ -350,22 +393,87 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
         'Connect auth: ' + (status.connectAuthToken || '(see server logs if auto-generated)');
     }
 
-    function renderModels(models) {
+    let modelCatalog = [];
+
+    function setModelsMessage(text, isError = false) {
+      const el = $('modelsNotice');
+      el.textContent = text || '';
+      el.style.color = isError ? 'var(--danger)' : 'var(--ok)';
+    }
+
+    function updateModelSelects(models) {
+      const enabled = models.filter((m) => m.enabled);
+      const options = enabled.map((m) => '<option value="' + m.id + '">' + m.id + '</option>').join('');
+
+      const testSelect = $('testModel');
+      const currentTest = testSelect.value;
+      testSelect.innerHTML = options;
+      if (currentTest && enabled.some((m) => m.id === currentTest)) {
+        testSelect.value = currentTest;
+      } else if (enabled.length > 0) {
+        testSelect.selectedIndex = 0;
+      }
+
+      const settingsSelect = $('settingsDefaultModel');
+      if (!settingsSelect) return;
+      const currentSettings = settingsSelect.value;
+      const merged = [...enabled];
+      if (currentSettings && !merged.some((m) => m.id === currentSettings)) {
+        merged.unshift({ id: currentSettings, enabled: false });
+      }
+      settingsSelect.innerHTML = merged.map((m) => '<option value="' + m.id + '">' + m.id + '</option>').join('');
+      if (currentSettings && [...settingsSelect.options].some((opt) => opt.value === currentSettings)) {
+        settingsSelect.value = currentSettings;
+      }
+    }
+
+    function renderModels(payload) {
+      const models = payload.data || [];
+      modelCatalog = models.map((m) => ({ ...m }));
+      const visibleCount = payload.visibleCount ?? models.filter((m) => m.enabled).length;
+      const totalCount = payload.totalCount ?? models.length;
+      $('modelsSummary').textContent = visibleCount + ' of ' + totalCount + ' visible to clients via /v1/models';
+
       if (!models.length) {
-        $('modelsTable').innerHTML = '<p class="label">No models returned.</p>';
+        $('modelsTable').innerHTML = '<p class="label" style="padding:12px">No models returned.</p>';
         return;
       }
-      $('modelsTable').innerHTML = '<table><thead><tr><th>ID</th><th>Owner</th></tr></thead><tbody>' +
-        models.map((m) => '<tr><td><code>' + m.id + '</code></td><td>' + (m.owned_by || 'cursor') + '</td></tr>').join('') +
+
+      $('modelsTable').innerHTML =
+        '<table><thead><tr><th>Visible</th><th>ID</th><th>Owner</th></tr></thead><tbody>' +
+        modelCatalog.map((m, index) =>
+          '<tr class="' + (m.enabled ? '' : 'disabled') + '">' +
+          '<td><input type="checkbox" data-model-index="' + index + '" ' + (m.enabled ? 'checked' : '') + ' /></td>' +
+          '<td><code>' + m.id + '</code></td>' +
+          '<td>' + (m.owned_by || 'cursor') + '</td>' +
+          '</tr>'
+        ).join('') +
         '</tbody></table>';
-      const select = $('testModel');
-      const current = select.value;
-      select.innerHTML = models.map((m) => '<option value="' + m.id + '">' + m.id + '</option>').join('');
-      if (current && models.some((m) => m.id === current)) {
-        select.value = current;
-      } else if (models.length > 0) {
-        select.selectedIndex = 0;
-      }
+
+      $('modelsTable').querySelectorAll('input[type=checkbox][data-model-index]').forEach((input) => {
+        input.addEventListener('change', (event) => {
+          const index = Number(event.target.getAttribute('data-model-index'));
+          modelCatalog[index].enabled = event.target.checked;
+          event.target.closest('tr')?.classList.toggle('disabled', !event.target.checked);
+          $('modelsSummary').textContent =
+            modelCatalog.filter((m) => m.enabled).length + ' of ' + modelCatalog.length + ' visible to clients via /v1/models';
+          updateModelSelects(modelCatalog);
+        });
+      });
+
+      updateModelSelects(modelCatalog);
+    }
+
+    async function saveModelVisibility() {
+      const disabledModels = modelCatalog.filter((m) => !m.enabled).map((m) => m.id);
+      const res = await authedApi('/models', {
+        method: 'PATCH',
+        body: JSON.stringify({ disabledModels }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save model visibility');
+      renderModels(data);
+      setModelsMessage('Model visibility saved.');
     }
 
     function renderLogs(entries) {
@@ -509,11 +617,16 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       const res = await authedApi('/models');
       if (!res.ok) throw new Error('Failed to load models');
       const data = await res.json();
-      renderModels(data.data || []);
+      renderModels(data);
       const settingsModel = $('settingsDefaultModel');
       const current = settingsModel.value;
-      settingsModel.innerHTML = (data.data || []).map((m) => '<option value="' + m.id + '">' + m.id + '</option>').join('');
-      if (current && (data.data || []).some((m) => m.id === current)) settingsModel.value = current;
+      const enabledIds = new Set((data.data || []).filter((m) => m.enabled).map((m) => m.id));
+      if (current && !enabledIds.has(current) && ![...settingsModel.options].some((opt) => opt.value === current)) {
+        const option = document.createElement('option');
+        option.value = current;
+        option.textContent = current;
+        settingsModel.appendChild(option);
+      }
     }
 
     async function loadLogs() {
@@ -577,8 +690,42 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
         .then(() => { setSettingsMessage('Connect token regenerated.'); })
         .catch((error) => { setSettingsMessage(String(error), true); });
     });
+    $('verifyRestKeyBtn').addEventListener('click', async () => {
+      const key = $('verifyRestKey').value.trim();
+      const result = $('verifyRestKeyResult');
+      if (!key) {
+        result.textContent = 'Enter a key to verify.';
+        return;
+      }
+      try {
+        const res = await authedApi('/verify-rest-key', {
+          method: 'POST',
+          body: JSON.stringify({ key }),
+        });
+        const data = await res.json();
+        result.textContent = data.ok ? 'Key is accepted by the proxy.' : 'Key was rejected.';
+      } catch (error) {
+        result.textContent = String(error);
+      }
+    });
 
     $('refreshModels').addEventListener('click', () => loadModels().catch(showError));
+    $('saveModels').addEventListener('click', () => {
+      setModelsMessage('');
+      saveModelVisibility().catch((error) => setModelsMessage(String(error), true));
+    });
+    $('modelsEnableAll').addEventListener('click', () => {
+      modelCatalog.forEach((m) => { m.enabled = true; });
+      renderModels({ data: modelCatalog, totalCount: modelCatalog.length, visibleCount: modelCatalog.length });
+    });
+    $('modelsComposerOnly').addEventListener('click', () => {
+      modelCatalog.forEach((m) => { m.enabled = /^composer/i.test(m.id); });
+      renderModels({
+        data: modelCatalog,
+        totalCount: modelCatalog.length,
+        visibleCount: modelCatalog.filter((m) => m.enabled).length,
+      });
+    });
     $('refreshLogs').addEventListener('click', () => loadLogs().catch(showError));
     $('runHealth').addEventListener('click', async () => {
       const res = await fetch('/health');
@@ -588,12 +735,18 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       $('runTest').disabled = true;
       $('testOutput').textContent = 'Running…';
       try {
+        const body = {
+          model: $('testModel').value,
+          message: $('testPrompt').value,
+        };
+        const speed = $('testSpeed').value;
+        if (speed === 'fast') body.fast = true;
+        if (speed === 'standard') body.fast = false;
+        const reasoning = $('testReasoning').value;
+        if (reasoning) body.reasoning_effort = reasoning;
         const res = await authedApi('/chat', {
           method: 'POST',
-          body: JSON.stringify({
-            model: $('testModel').value,
-            message: $('testPrompt').value,
-          }),
+          body: JSON.stringify(body),
         });
         const data = await res.json();
         $('testOutput').textContent = JSON.stringify(data, null, 2);

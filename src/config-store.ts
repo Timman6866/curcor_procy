@@ -10,10 +10,14 @@ import {
   toolsPolicyToView,
   viewToToolsPolicy,
 } from "./tools-policy.ts";
+import { filterModelIds, parseDisabledModels } from "./model-catalog.ts";
 
 export interface ConfigProvider {
   get(): Config;
   getConnectAuthToken(): string;
+  filterModelIds(ids: string[]): string[];
+  getDisabledModels(): string[];
+  setDisabledModels(disabledModels: string[]): string[];
 }
 
 export interface SettingsView {
@@ -74,6 +78,7 @@ interface PersistedSettings {
   cursorApiKey?: string;
   adminUsername?: string;
   adminPassword?: string;
+  disabledModels?: string[];
 }
 
 function defaultSettingsPath(): string {
@@ -120,6 +125,7 @@ function readPersistedSettings(path: string): PersistedSettings {
       cursorApiKey: typeof record.cursorApiKey === "string" ? record.cursorApiKey : undefined,
       adminUsername: typeof record.adminUsername === "string" ? record.adminUsername : undefined,
       adminPassword: typeof record.adminPassword === "string" ? record.adminPassword : undefined,
+      disabledModels: parseDisabledModels(record.disabledModels),
     };
   } catch {
     return {};
@@ -152,7 +158,12 @@ function mergeConfig(env: Config, persisted: PersistedSettings): Config {
   };
 }
 
-function persistedFromState(env: Config, current: Config, generatedConnectToken: string): PersistedSettings {
+function persistedFromState(
+  env: Config,
+  current: Config,
+  generatedConnectToken: string,
+  disabledModels: string[],
+): PersistedSettings {
   const persisted: PersistedSettings = {};
 
   if (current.defaultModel !== env.defaultModel) persisted.defaultModel = current.defaultModel;
@@ -173,6 +184,7 @@ function persistedFromState(env: Config, current: Config, generatedConnectToken:
   if (current.cursorApiKey !== env.cursorApiKey) persisted.cursorApiKey = current.cursorApiKey;
   if (current.adminUsername !== env.adminUsername) persisted.adminUsername = current.adminUsername;
   if (current.adminPassword !== env.adminPassword) persisted.adminPassword = current.adminPassword;
+  if (disabledModels.length > 0) persisted.disabledModels = disabledModels;
 
   if (
     !env.connectAuthToken &&
@@ -189,6 +201,7 @@ export class ConfigStore implements ConfigProvider {
   private current: Config;
   private persisted: PersistedSettings;
   private generatedConnectToken: string;
+  private disabledModels: Set<string>;
 
   constructor(
     private readonly env: Config,
@@ -199,6 +212,7 @@ export class ConfigStore implements ConfigProvider {
     mkdirSync(dirname(settingsPath), { recursive: true });
     this.persisted = readPersistedSettings(settingsPath);
     this.current = mergeConfig(env, this.persisted);
+    this.disabledModels = new Set(this.persisted.disabledModels ?? []);
     mkdirSync(this.current.cwd, { recursive: true });
   }
 
@@ -217,6 +231,26 @@ export class ConfigStore implements ConfigProvider {
 
   getSettingsPath(): string {
     return this.settingsPath;
+  }
+
+  filterModelIds(ids: string[]): string[] {
+    return filterModelIds(ids, this.disabledModels);
+  }
+
+  getDisabledModels(): string[] {
+    return [...this.disabledModels].sort();
+  }
+
+  setDisabledModels(disabledModels: string[]): string[] {
+    this.disabledModels = new Set(parseDisabledModels(disabledModels));
+    this.persisted = persistedFromState(
+      this.env,
+      this.current,
+      this.generatedConnectToken,
+      this.getDisabledModels(),
+    );
+    writePersistedSettings(this.settingsPath, this.persisted);
+    return this.getDisabledModels();
   }
 
   getSettingsView(): SettingsView {
@@ -270,6 +304,7 @@ export class ConfigStore implements ConfigProvider {
     if (update.resetToEnv) {
       this.persisted = {};
       this.current = { ...this.env };
+      this.disabledModels = new Set();
       mkdirSync(this.current.cwd, { recursive: true });
       writePersistedSettings(this.settingsPath, {});
       return this.current;
@@ -319,7 +354,12 @@ export class ConfigStore implements ConfigProvider {
     }
 
     this.current = next;
-    this.persisted = persistedFromState(this.env, next, this.generatedConnectToken);
+    this.persisted = persistedFromState(
+      this.env,
+      next,
+      this.generatedConnectToken,
+      this.getDisabledModels(),
+    );
     writePersistedSettings(this.settingsPath, this.persisted);
     return this.current;
   }
