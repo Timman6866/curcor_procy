@@ -1,3 +1,5 @@
+import { getLogPolicy, requestLoggingEnabled } from "./logging.ts";
+
 export interface RequestLogEntry {
   id: string;
   at: string;
@@ -12,6 +14,8 @@ const entries: RequestLogEntry[] = [];
 let counter = 0;
 
 export function recordRequest(entry: Omit<RequestLogEntry, "id" | "at">): void {
+  if (!requestLoggingEnabled(getLogPolicy())) return;
+
   counter += 1;
   entries.unshift({
     id: String(counter),
@@ -23,6 +27,12 @@ export function recordRequest(entry: Omit<RequestLogEntry, "id" | "at">): void {
   }
 }
 
+export function clearRequestLogForTests(): void {
+  entries.length = 0;
+  counter = 0;
+}
+
 export function listRequestLog(limit = 50): RequestLogEntry[] {
+  if (!requestLoggingEnabled(getLogPolicy())) return [];
   return entries.slice(0, Math.min(limit, MAX_ENTRIES));
 }

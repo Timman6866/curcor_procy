@@ -12,7 +12,11 @@
     "build:prod": "node esbuild.config.mjs",
     "test": "tsx --test src/*.test.ts src/**/*.test.ts",
     "docker:build": "docker compose build",
+    "docker:build:standard": "docker build --build-arg LOG_POLICY=standard -t cursor-openai-proxy:standard .",
+    "docker:build:nolog": "docker build --build-arg LOG_POLICY=no-log -t cursor-openai-proxy:no-log .",
+    "docker:build:all": "npm run docker:build:standard && npm run docker:build:nolog",
     "docker:up": "docker compose up -d",
+    "docker:up:nolog": "docker compose -f docker-compose.nolog.yml up -d",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
     "smoke": "powershell -ExecutionPolicy Bypass -File scripts/smoke.ps1"

@@ -9,12 +9,15 @@ const baseConfig: Config = {
   port: 8787,
   host: "127.0.0.1",
   cursorApiKey: "test-key",
-  proxyApiKey: undefined,
+  proxyApiKeys: [],
   connectAuthToken: undefined,
   defaultModel: "composer-2.5",
   runtime: "local",
   cwd: "/tmp/scratch",
   toolsPolicy: "none",
+  adminUsername: "admin",
+  adminPassword: undefined,
+  logPolicy: "standard",
 };
 
 test("function calling keeps MCP enabled for custom OpenAI tools", () => {

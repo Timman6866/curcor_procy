@@ -142,6 +142,7 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
         <p class="sub">Health, config, models, and smoke tests for your compatibility endpoint.</p>
       </div>
       <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <div class="badge" id="loggingPolicyBadge"><span class="dot"></span><span id="loggingPolicyText">standard</span></div>
         <div class="badge"><span class="dot" id="healthDot"></span><span id="healthText">Checking…</span></div>
         <button class="secondary" id="logoutBtn" type="button">Sign out</button>
       </div>
@@ -154,7 +155,7 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       <button class="tab" data-tab="settings">Settings</button>
       <button class="tab" data-tab="models">Models</button>
       <button class="tab" data-tab="tester">Chat tester</button>
-      <button class="tab" data-tab="logs">Request log</button>
+      <button class="tab" data-tab="logs" id="logsTabButton">Request log</button>
     </div>
 
     <section class="panel active card" data-panel="overview">
@@ -215,10 +216,18 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
               <input id="settingsCursorKey" type="password" placeholder="Leave blank to keep current" autocomplete="new-password" />
             </div>
             <div class="field">
-              <label>Proxy API key <span id="sourceProxyKey" class="pill source-pill"></span></label>
-              <input id="settingsProxyKey" type="password" placeholder="Leave blank to keep current" autocomplete="new-password" />
-              <p class="hint">When set, clients send this as Bearer or <code>x-api-key</code>. Set the same value in <code>PROXY_API_KEY</code> for OpenCode/Zenflow.</p>
-              <div class="row" style="gap:8px; align-items:end">
+              <label>Proxy API keys <span id="sourceProxyKey" class="pill source-pill"></span></label>
+              <p class="hint">Clients send any enabled key as Bearer or <code>x-api-key</code>. Usage is persisted to <code>proxy-usage.json</code> (aggregate counters only).</p>
+              <div id="proxyKeysNotice" class="notice hidden" style="margin-top:8px"></div>
+              <div class="row" style="margin-top:0; gap:8px; flex-wrap:wrap">
+                <input id="newProxyKeyLabel" type="text" placeholder="Label (optional)" style="flex:1; min-width:180px" />
+                <button class="secondary" id="createProxyKeyBtn" type="button">Generate key</button>
+              </div>
+              <div id="proxyKeysTable" class="models-table-wrap" style="margin-top:12px"></div>
+              <h3 style="margin-top:18px">Retired keys</h3>
+              <p class="hint">Removed keys keep lifetime usage history for reporting.</p>
+              <div id="retiredProxyKeysTable" class="models-table-wrap" style="margin-top:8px"></div>
+              <div class="row" style="gap:8px; align-items:end; margin-top:12px">
                 <label class="stack" style="flex:1; gap:6px">
                   <span class="label">Test a client key</span>
                   <input id="verifyRestKey" type="password" placeholder="Paste key to verify" autocomplete="off" />
@@ -226,7 +235,6 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
                 <button class="secondary" id="verifyRestKeyBtn" type="button">Verify</button>
               </div>
               <p id="verifyRestKeyResult" class="hint"></p>
-              <label class="hint"><input id="clearProxyKey" type="checkbox" /> Clear proxy API key (clients can use Cursor key)</label>
             </div>
             <div class="field">
               <label>Connect auth token <span id="sourceConnectToken" class="pill source-pill"></span></label>
@@ -311,7 +319,7 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       </div>
     </section>
 
-    <section class="panel card" data-panel="logs">
+    <section class="panel card" data-panel="logs" id="logsPanel">
       <div class="row" style="justify-content:space-between; margin-top:0">
         <h2 style="margin:0">Recent requests</h2>
         <button class="secondary" id="refreshLogs" type="button">Refresh</button>
@@ -363,34 +371,59 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
 
     function renderSummary(status) {
       $('summaryCards').innerHTML = [
+        ['Logging policy', status.loggingPolicy || 'standard', status.loggingPolicy === 'no-log' ? 'warn' : 'ok'],
         ['Runtime', status.runtime, ''],
         ['Default model', status.defaultModel, ''],
         ['Tools policy', Array.isArray(status.toolsPolicy) ? status.toolsPolicy.join(', ') : status.toolsPolicy, ''],
+        ['Proxy API keys', String(status.proxyApiKeyCount ?? 0), status.proxyApiKeyCount ? 'ok' : 'warn'],
         ['REST auth', status.restAuthMode, status.restAuthMode === 'proxy-key' ? 'warn' : 'ok'],
       ].map(([label, value, kind]) =>
         '<div class="card"><div class="label">' + label + '</div><div class="metric">' + value + '</div><div>' + pill(kind ? label : 'live', kind) + '</div></div>'
       ).join('');
     }
 
+    function applyLoggingPolicy(status) {
+      const noLog = status.loggingPolicy === 'no-log';
+      const policyText = status.loggingPolicy || 'standard';
+      $('loggingPolicyText').textContent = 'Logging: ' + policyText;
+      $('loggingPolicyBadge').querySelector('.dot').style.background = noLog ? 'var(--warn)' : 'var(--ok)';
+      $('logsTabButton').classList.toggle('hidden', noLog);
+      $('logsPanel').classList.toggle('hidden', noLog);
+      if (noLog) {
+        document.querySelectorAll('.tab').forEach((el) => el.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach((el) => el.classList.remove('active'));
+        const overviewTab = document.querySelector('.tab[data-tab="overview"]');
+        overviewTab?.classList.add('active');
+        document.querySelector('[data-panel="overview"]')?.classList.add('active');
+      }
+      const connectField = $('settingsConnectTokenDisplay')?.closest('.field');
+      if (connectField) connectField.classList.toggle('hidden', noLog);
+    }
+
     function renderConfig(status) {
+      const noLog = status.loggingPolicy === 'no-log';
       const rows = [
+        ['Logging policy', status.loggingPolicy || 'standard'],
         ['Host', status.host + ':' + status.port],
         ['Runtime', status.runtime],
         ['Working directory', status.cwd],
         ['Default model', status.defaultModel],
         ['Tools policy', Array.isArray(status.toolsPolicy) ? status.toolsPolicy.join(', ') : status.toolsPolicy],
         ['Cursor API key', status.secrets.cursorApiKey ? 'configured' : 'missing'],
-        ['Proxy API key', status.secrets.proxyApiKey ? 'configured' : 'not set'],
+        ['Proxy API key', status.secrets.proxyApiKey ? status.proxyApiKeyCount + ' enabled' : 'not set'],
         ['Connect token', status.secrets.connectAuthToken],
         ['Admin user', status.adminUsername],
       ];
       $('configKv').innerHTML = rows.map(([k, v]) => '<div>' + k + '</div><div>' + v + '</div>').join('');
+      const connectAuthHint = noLog
+        ? '(set CONNECT_AUTH_TOKEN in environment; not shown in no-log mode)'
+        : (status.connectAuthToken || '(see server logs if auto-generated)');
       $('endpointBlock').textContent =
         'OpenAI REST:  ' + status.endpoints.openai + '\\n' +
         'Models:       ' + status.endpoints.models + '\\n' +
         'Health:       ' + status.endpoints.health + '\\n' +
         'Connect Send: ' + status.endpoints.connectSend + '\\n' +
-        'Connect auth: ' + (status.connectAuthToken || '(see server logs if auto-generated)');
+        'Connect auth: ' + connectAuthHint;
     }
 
     let modelCatalog = [];
@@ -476,6 +509,144 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       setModelsMessage('Model visibility saved.');
     }
 
+    function setProxyKeysNotice(text, isError = false) {
+      const el = $('proxyKeysNotice');
+      if (!text) {
+        el.classList.add('hidden');
+        el.textContent = '';
+        return;
+      }
+      el.classList.remove('hidden');
+      el.textContent = text;
+      el.style.color = isError ? 'var(--danger)' : 'var(--text)';
+      el.style.borderColor = isError ? 'var(--danger)' : 'var(--border)';
+      el.style.background = isError ? 'rgba(255, 107, 107, 0.08)' : 'rgba(110, 168, 255, 0.08)';
+    }
+
+    function quotaSummary(quota) {
+      if (!quota) return '—';
+      const parts = [];
+      if (quota.maxTotalTokens != null) parts.push('total ' + quota.maxTotalTokens);
+      if (quota.maxDailyTokens != null) parts.push('daily ' + quota.maxDailyTokens);
+      if (quota.maxMonthlyTokens != null) parts.push('monthly ' + quota.maxMonthlyTokens);
+      return parts.join(', ') || '—';
+    }
+
+    function renderProxyKeys(payload) {
+      const keys = payload.keys || [];
+      if (!keys.length) {
+        $('proxyKeysTable').innerHTML = '<p class="label" style="padding:12px">No proxy API keys yet. Generate one to require client authentication.</p>';
+      } else {
+        $('proxyKeysTable').innerHTML =
+          '<table><thead><tr><th>Label</th><th>Prefix</th><th>Source</th><th>Today</th><th>Month</th><th>Lifetime</th><th>Quota</th><th></th></tr></thead><tbody>' +
+          keys.map((key) => {
+            const usage = key.usage || {};
+            const today = usage.today || {};
+            const month = usage.monthToDate || {};
+            return '<tr>' +
+              '<td>' + key.label + '</td>' +
+              '<td><code>' + key.prefix + '</code></td>' +
+              '<td><span class="pill' + (key.source === 'env' ? ' ok' : '') + '">' + key.source + '</span></td>' +
+              '<td>' + (today.totalTokens || 0) + ' tok / ' + (today.requestCount || 0) + ' req</td>' +
+              '<td>' + (month.totalTokens || 0) + ' tok / ' + (month.requestCount || 0) + ' req</td>' +
+              '<td>' + (usage.totalTokens || 0) + ' tok / ' + (usage.requestCount || 0) + ' req</td>' +
+              '<td><code>' + quotaSummary(key.quota) + '</code><br><button class="secondary" type="button" data-edit-quota="' + key.id + '">Set quota</button></td>' +
+              '<td><button class="secondary" type="button" data-remove-proxy-key="' + key.id + '">Remove</button></td>' +
+              '</tr>';
+          }).join('') +
+          '</tbody></table>';
+
+        $('proxyKeysTable').querySelectorAll('[data-remove-proxy-key]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const id = button.getAttribute('data-remove-proxy-key');
+            if (!id || !confirm('Remove this API key? Clients using it will be rejected.')) return;
+            try {
+              const res = await authedApi('/proxy-keys/' + encodeURIComponent(id), { method: 'DELETE' });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || 'Failed to remove API key');
+              setProxyKeysNotice('');
+              await Promise.all([loadProxyKeys(), loadStatus()]);
+            } catch (error) {
+              setProxyKeysNotice(String(error), true);
+            }
+          });
+        });
+
+        $('proxyKeysTable').querySelectorAll('[data-edit-quota]').forEach((button) => {
+          button.addEventListener('click', async () => {
+            const id = button.getAttribute('data-edit-quota');
+            const key = keys.find((entry) => entry.id === id);
+            if (!id || !key) return;
+            const total = prompt('Lifetime token limit (blank = none)', key.quota?.maxTotalTokens ?? '');
+            if (total === null) return;
+            const daily = prompt('Daily token limit (blank = none)', key.quota?.maxDailyTokens ?? '');
+            if (daily === null) return;
+            const monthly = prompt('Monthly token limit (blank = none)', key.quota?.maxMonthlyTokens ?? '');
+            if (monthly === null) return;
+            const quota = {
+              maxTotalTokens: total.trim() ? Number(total.trim()) : null,
+              maxDailyTokens: daily.trim() ? Number(daily.trim()) : null,
+              maxMonthlyTokens: monthly.trim() ? Number(monthly.trim()) : null,
+            };
+            try {
+              const res = await authedApi('/proxy-keys/' + encodeURIComponent(id), {
+                method: 'PATCH',
+                body: JSON.stringify({ quota }),
+              });
+              const data = await res.json();
+              if (!res.ok) throw new Error(data.error || 'Failed to save quota');
+              setProxyKeysNotice('Quota updated.');
+              await loadProxyKeys();
+            } catch (error) {
+              setProxyKeysNotice(String(error), true);
+            }
+          });
+        });
+      }
+
+      const retired = payload.retired || [];
+      if (!retired.length) {
+        $('retiredProxyKeysTable').innerHTML = '<p class="label" style="padding:12px">No retired keys yet.</p>';
+        return;
+      }
+
+      $('retiredProxyKeysTable').innerHTML =
+        '<table><thead><tr><th>Label</th><th>Prefix</th><th>Removed</th><th>Month</th><th>Lifetime</th></tr></thead><tbody>' +
+        retired.map((key) => {
+          const month = key.monthToDate || {};
+          const removed = key.deletedAt ? key.deletedAt.replace('T', ' ').replace('Z', ' UTC') : '—';
+          return '<tr>' +
+            '<td>' + key.label + '</td>' +
+            '<td><code>' + key.prefix + '</code></td>' +
+            '<td>' + removed + '</td>' +
+            '<td>' + (month.totalTokens || 0) + ' tok / ' + (month.requestCount || 0) + ' req</td>' +
+            '<td>' + (key.totalTokens || 0) + ' tok / ' + (key.requestCount || 0) + ' req</td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table>';
+    }
+
+    async function loadProxyKeys() {
+      const res = await authedApi('/proxy-keys');
+      if (!res.ok) throw new Error('Failed to load proxy API keys');
+      const data = await res.json();
+      renderProxyKeys(data);
+      return data;
+    }
+
+    async function createProxyKey() {
+      const label = $('newProxyKeyLabel').value.trim();
+      const res = await authedApi('/proxy-keys', {
+        method: 'POST',
+        body: JSON.stringify({ label: label || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to create API key');
+      $('newProxyKeyLabel').value = '';
+      setProxyKeysNotice('New key created. Copy it now — it will not be shown again: ' + data.key.secret);
+      await Promise.all([loadProxyKeys(), loadStatus()]);
+    }
+
     function renderLogs(entries) {
       if (!entries.length) {
         $('logsTable').innerHTML = '<p class="label">No requests recorded yet.</p>';
@@ -492,6 +663,7 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       const status = await res.json();
       $('healthText').textContent = status.healthy ? 'Healthy' : 'Unhealthy';
       $('healthDot').style.background = status.healthy ? 'var(--ok)' : 'var(--danger)';
+      applyLoggingPolicy(status);
       renderSummary(status);
       renderConfig(status);
       return status;
@@ -556,10 +728,8 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
       $('settingsConnectTokenDisplay').value = settings.connectAuthToken || '';
       if (settings.settingsPath) $('settingsPathLabel').textContent = settings.settingsPath;
       $('settingsCursorKey').value = '';
-      $('settingsProxyKey').value = '';
       $('settingsConnectToken').value = '';
       $('settingsAdminPass').value = '';
-      $('clearProxyKey').checked = false;
       $('clearConnectToken').checked = settings.secrets.connectAuthTokenAuto;
       renderToolGrid(settings.availableTools || [], settings.tools || []);
       updateToolsPanelVisibility();
@@ -594,12 +764,9 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
         ...extra,
       };
       const cursorKey = $('settingsCursorKey').value.trim();
-      const proxyKey = $('settingsProxyKey').value.trim();
       const connectToken = $('settingsConnectToken').value.trim();
       const adminPass = $('settingsAdminPass').value;
       if (cursorKey) body.cursorApiKey = cursorKey;
-      if (proxyKey) body.proxyApiKey = proxyKey;
-      if ($('clearProxyKey').checked) body.proxyApiKey = null;
       if (connectToken) body.connectAuthToken = connectToken;
       if ($('clearConnectToken').checked) body.connectAuthToken = null;
       if (adminPass) body.adminPassword = adminPass;
@@ -703,12 +870,18 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
           body: JSON.stringify({ key }),
         });
         const data = await res.json();
-        result.textContent = data.ok ? 'Key is accepted by the proxy.' : 'Key was rejected.';
+        result.textContent = data.ok
+          ? 'Key is accepted (' + (data.method || 'unknown') + (data.proxyKeyId ? ', id ' + data.proxyKeyId : '') + ').'
+          : 'Key was rejected.';
       } catch (error) {
         result.textContent = String(error);
       }
     });
 
+    $('createProxyKeyBtn').addEventListener('click', () => {
+      setProxyKeysNotice('');
+      createProxyKey().catch((error) => setProxyKeysNotice(String(error), true));
+    });
     $('refreshModels').addEventListener('click', () => loadModels().catch(showError));
     $('saveModels').addEventListener('click', () => {
       setModelsMessage('');
@@ -764,7 +937,11 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
     async function bootstrap() {
       const status = await loadStatus();
       await loadModels();
-      await Promise.all([loadLogs(), loadSettings()]);
+      const tasks = [loadSettings(), loadProxyKeys()];
+      if (status.loggingPolicy !== 'no-log') {
+        tasks.push(loadLogs());
+      }
+      await Promise.all(tasks);
       const select = $('testModel');
       if (status.defaultModel && [...select.options].some((opt) => opt.value === status.defaultModel)) {
         select.value = status.defaultModel;

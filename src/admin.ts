@@ -11,8 +11,12 @@ import { complete, listModels } from "./cursor-backend.ts";
 import { normalizeBody } from "./normalize.ts";
 import { authorize, type Config } from "./config.ts";
 import type { ConfigStore, SettingsUpdate } from "./config-store.ts";
+import { isNoLogPolicy } from "./logging.ts";
+import { proxyAuthEnabled } from "./proxy-api-keys.ts";
 import { listRequestLog, recordRequest } from "./request-log.ts";
 import { AVAILABLE_TOOLS, toolsPolicyToView } from "./tools-policy.ts";
+import { listKeyUsageSnapshots } from "./usage-meter.ts";
+import { usageStorePath } from "./usage-store.ts";
 
 interface LoginBody {
   username?: string;
@@ -144,8 +148,10 @@ export function registerAdminRoutes(
 
     const config = configStore.get();
     const base = publicBaseUrl(request);
+    const noLog = isNoLogPolicy(config.logPolicy);
     return {
       healthy: true,
+      loggingPolicy: config.logPolicy,
       host: config.host,
       port: config.port,
       runtime: config.runtime,
@@ -153,13 +159,14 @@ export function registerAdminRoutes(
       defaultModel: config.defaultModel,
       toolsPolicy: toolsPolicyLabel(config),
       adminUsername: config.adminUsername,
-      restAuthMode: config.proxyApiKey ? "proxy-key" : "cursor-key-or-open",
+      restAuthMode: proxyAuthEnabled(config.proxyApiKeys) ? "proxy-key" : "cursor-key-or-open",
+      proxyApiKeyCount: config.proxyApiKeys.filter((key) => key.enabled).length,
       secrets: {
         cursorApiKey: Boolean(config.cursorApiKey),
-        proxyApiKey: Boolean(config.proxyApiKey),
-        connectAuthToken: config.connectAuthToken ? "configured" : "auto-generated",
+        proxyApiKey: config.proxyApiKeys.some((key) => key.enabled),
+        connectAuthToken: config.connectAuthToken ? "configured" : noLog ? "required" : "auto-generated",
       },
-      connectAuthToken: configStore.getConnectAuthToken(),
+      connectAuthToken: noLog ? undefined : configStore.getConnectAuthToken(),
       endpoints: {
         health: `${base}/health`,
         openai: `${base}/v1/chat/completions`,
@@ -172,12 +179,96 @@ export function registerAdminRoutes(
 
   app.get("/admin/api/settings", async (request, reply) => {
     if (!requireAdmin(request, reply, configStore)) return;
+    const noLog = isNoLogPolicy(configStore.get().logPolicy);
     return {
       ...configStore.getSettingsView(),
       settingsPath: configStore.getSettingsPath(),
-      connectAuthToken: configStore.getConnectAuthToken(),
+      connectAuthToken: noLog ? undefined : configStore.getConnectAuthToken(),
       availableTools: AVAILABLE_TOOLS,
     };
+  });
+
+  app.get("/admin/api/proxy-keys", async (request, reply) => {
+    if (!requireAdmin(request, reply, configStore)) return;
+
+    const keys = configStore.listProxyApiKeys();
+    const usage = listKeyUsageSnapshots(configStore.get().proxyApiKeys);
+
+    return {
+      persisted: true,
+      usagePath: usageStorePath(),
+      keys: keys.map((key) => ({
+        ...key,
+        usage: usage.active.find((entry) => entry.apiKeyId === key.id) ?? {
+          requestCount: 0,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          today: { requestCount: 0, totalTokens: 0 },
+          monthToDate: { requestCount: 0, totalTokens: 0 },
+        },
+      })),
+      retired: usage.retired,
+    };
+  });
+
+  app.patch("/admin/api/proxy-keys/:id", async (request, reply) => {
+    if (!requireAdmin(request, reply, configStore)) return;
+
+    const id = (request.params as { id?: string }).id?.trim();
+    if (!id) {
+      return reply.code(400).send({ error: "id is required" });
+    }
+
+    const body = (request.body ?? {}) as {
+      quota?: {
+        maxTotalTokens?: number | null;
+        maxDailyTokens?: number | null;
+        maxMonthlyTokens?: number | null;
+      } | null;
+    };
+
+    if (body.quota === undefined) {
+      return reply.code(400).send({ error: "quota is required" });
+    }
+
+    const quota = body.quota === null
+      ? null
+      : {
+          ...(typeof body.quota.maxTotalTokens === "number" ? { maxTotalTokens: body.quota.maxTotalTokens } : {}),
+          ...(typeof body.quota.maxDailyTokens === "number" ? { maxDailyTokens: body.quota.maxDailyTokens } : {}),
+          ...(typeof body.quota.maxMonthlyTokens === "number" ? { maxMonthlyTokens: body.quota.maxMonthlyTokens } : {}),
+        };
+
+    const updated = configStore.updateProxyApiKeyQuota(id, quota);
+    if (!updated) {
+      return reply.code(404).send({ error: "API key not found" });
+    }
+
+    return { ok: true, key: configStore.listProxyApiKeys().find((key) => key.id === id) ?? null };
+  });
+
+  app.post("/admin/api/proxy-keys", async (request, reply) => {
+    if (!requireAdmin(request, reply, configStore)) return;
+
+    const body = (request.body ?? {}) as { label?: string };
+    const created = configStore.addProxyApiKey(body.label);
+    return { ok: true, key: created };
+  });
+
+  app.delete("/admin/api/proxy-keys/:id", async (request, reply) => {
+    if (!requireAdmin(request, reply, configStore)) return;
+
+    const id = (request.params as { id?: string }).id?.trim();
+    if (!id) {
+      return reply.code(400).send({ error: "id is required" });
+    }
+
+    const removed = configStore.removeProxyApiKey(id);
+    if (!removed) {
+      return reply.code(404).send({ error: "API key not found" });
+    }
+    return { ok: true };
   });
 
   app.post("/admin/api/verify-rest-key", async (request, reply) => {
@@ -191,8 +282,12 @@ export function registerAdminRoutes(
     }
 
     try {
-      authorize(config, { authorization: `Bearer ${key}` });
-      return { ok: true };
+      const auth = authorize(config, { authorization: `Bearer ${key}` });
+      return {
+        ok: true,
+        method: auth.method,
+        proxyKeyId: auth.proxyKeyId ?? null,
+      };
     } catch {
       return { ok: false };
     }
@@ -209,7 +304,9 @@ export function registerAdminRoutes(
         settingsPath: configStore.getSettingsPath(),
         settings: {
           ...configStore.getSettingsView(),
-          connectAuthToken: configStore.getConnectAuthToken(),
+          connectAuthToken: isNoLogPolicy(configStore.get().logPolicy)
+            ? undefined
+            : configStore.getConnectAuthToken(),
           availableTools: AVAILABLE_TOOLS,
         },
       };
@@ -272,7 +369,11 @@ export function registerAdminRoutes(
 
   app.get("/admin/api/logs", async (request, reply) => {
     if (!requireAdmin(request, reply, configStore)) return;
-    return { entries: listRequestLog() };
+    const logPolicy = configStore.get().logPolicy;
+    return {
+      loggingPolicy: logPolicy,
+      entries: listRequestLog(),
+    };
   });
 
   app.post("/admin/api/chat", async (request, reply) => {

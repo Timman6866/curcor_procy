@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: cursor-openai-proxy:local
+      args:
+        LOG_POLICY: standard
+    image: cursor-openai-proxy:standard
     container_name: cursor-openai-proxy
     restart: unless-stopped
     env_file:

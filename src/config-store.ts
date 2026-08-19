@@ -4,6 +4,18 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import type { Config, Runtime } from "./config.ts";
 import {
+  envKeyIdSet,
+  generateProxyApiKeySecret,
+  keyPrefix,
+  newProxyApiKey,
+  parsePersistedProxyApiKeys,
+  proxyApiKeysEqual,
+  resolveProxyApiKeys,
+  toProxyApiKeyView,
+  type ProxyApiKey,
+  type ProxyApiKeyView,
+} from "./proxy-api-keys.ts";
+import {
   parseToolsPolicy,
   parseToolsPolicyValue,
   type ToolsPolicy,
@@ -11,6 +23,8 @@ import {
   viewToToolsPolicy,
 } from "./tools-policy.ts";
 import { filterModelIds, parseDisabledModels } from "./model-catalog.ts";
+import { retireKeyUsage, syncUsageKeyCatalog } from "./usage-meter.ts";
+import type { KeyQuota } from "./usage-store.ts";
 
 export interface ConfigProvider {
   get(): Config;
@@ -68,11 +82,20 @@ export interface SettingsUpdate {
   resetToEnv?: boolean;
 }
 
+export interface CreatedProxyApiKey {
+  id: string;
+  label: string;
+  secret: string;
+  prefix: string;
+  createdAt: string;
+}
+
 interface PersistedSettings {
   defaultModel?: string;
   runtime?: Runtime;
   toolsPolicy?: ToolsPolicy;
   cwd?: string;
+  proxyApiKeys?: ProxyApiKey[];
   proxyApiKey?: string | null;
   connectAuthToken?: string | null;
   cursorApiKey?: string;
@@ -110,6 +133,7 @@ function readPersistedSettings(path: string): PersistedSettings {
       runtime: record.runtime === "local" || record.runtime === "cloud" ? record.runtime : undefined,
       toolsPolicy,
       cwd: typeof record.cwd === "string" ? record.cwd : undefined,
+      proxyApiKeys: parsePersistedProxyApiKeys(record.proxyApiKeys),
       proxyApiKey:
         record.proxyApiKey === null
           ? null
@@ -144,10 +168,7 @@ function mergeConfig(env: Config, persisted: PersistedSettings): Config {
     runtime: persisted.runtime ?? env.runtime,
     toolsPolicy: persisted.toolsPolicy ?? env.toolsPolicy,
     cwd: persisted.cwd ? resolve(persisted.cwd) : env.cwd,
-    proxyApiKey:
-      persisted.proxyApiKey === null
-        ? undefined
-        : persisted.proxyApiKey ?? env.proxyApiKey,
+    proxyApiKeys: resolveProxyApiKeys(env.proxyApiKeys, persisted),
     connectAuthToken:
       persisted.connectAuthToken === null
         ? undefined
@@ -173,8 +194,8 @@ function persistedFromState(
   }
   if (current.cwd !== env.cwd) persisted.cwd = current.cwd;
 
-  if (current.proxyApiKey !== env.proxyApiKey) {
-    persisted.proxyApiKey = current.proxyApiKey ?? null;
+  if (!proxyApiKeysEqual(current.proxyApiKeys, env.proxyApiKeys)) {
+    persisted.proxyApiKeys = current.proxyApiKeys;
   }
 
   if (current.connectAuthToken !== env.connectAuthToken) {
@@ -202,6 +223,7 @@ export class ConfigStore implements ConfigProvider {
   private persisted: PersistedSettings;
   private generatedConnectToken: string;
   private disabledModels: Set<string>;
+  private readonly envKeyIds: Set<string>;
 
   constructor(
     private readonly env: Config,
@@ -209,11 +231,13 @@ export class ConfigStore implements ConfigProvider {
     generatedConnectToken?: string,
   ) {
     this.generatedConnectToken = generatedConnectToken ?? randomBytes(32).toString("base64url");
+    this.envKeyIds = envKeyIdSet(env.proxyApiKeys);
     mkdirSync(dirname(settingsPath), { recursive: true });
     this.persisted = readPersistedSettings(settingsPath);
     this.current = mergeConfig(env, this.persisted);
     this.disabledModels = new Set(this.persisted.disabledModels ?? []);
     mkdirSync(this.current.cwd, { recursive: true });
+    syncUsageKeyCatalog(this.current.proxyApiKeys);
   }
 
   static fromEnv(env: Config, settingsPath?: string): ConfigStore {
@@ -253,6 +277,79 @@ export class ConfigStore implements ConfigProvider {
     return this.getDisabledModels();
   }
 
+  listProxyApiKeys(): ProxyApiKeyView[] {
+    return this.current.proxyApiKeys.map((key) => toProxyApiKeyView(key, this.envKeyIds));
+  }
+
+  addProxyApiKey(label?: string): CreatedProxyApiKey {
+    const secret = generateProxyApiKeySecret();
+    const key = newProxyApiKey(secret, label?.trim() || "API key");
+    this.current = {
+      ...this.current,
+      proxyApiKeys: [...this.current.proxyApiKeys, key],
+    };
+    this.persistSettings();
+    syncUsageKeyCatalog(this.current.proxyApiKeys);
+    return {
+      id: key.id,
+      label: key.label,
+      secret: key.secret,
+      prefix: keyPrefix(key.secret),
+      createdAt: key.createdAt,
+    };
+  }
+
+  removeProxyApiKey(id: string): boolean {
+    const removedKey = this.current.proxyApiKeys.find((key) => key.id === id);
+    if (!removedKey) return false;
+
+    retireKeyUsage(removedKey.id, {
+      label: removedKey.label,
+      prefix: keyPrefix(removedKey.secret),
+    });
+
+    this.current = {
+      ...this.current,
+      proxyApiKeys: this.current.proxyApiKeys.filter((key) => key.id !== id),
+    };
+    this.persistSettings();
+    return true;
+  }
+
+  updateProxyApiKeyQuota(id: string, quota: KeyQuota | null): boolean {
+    const index = this.current.proxyApiKeys.findIndex((key) => key.id === id);
+    if (index < 0) return false;
+
+    const nextKeys = [...this.current.proxyApiKeys];
+    const current = nextKeys[index];
+    if (!current) return false;
+
+    nextKeys[index] = {
+      ...current,
+      quota: quota && Object.keys(quota).length > 0 ? quota : undefined,
+    };
+    this.current = { ...this.current, proxyApiKeys: nextKeys };
+    this.persistSettings();
+    return true;
+  }
+
+  private persistSettings(): void {
+    this.persisted = persistedFromState(
+      this.env,
+      this.current,
+      this.generatedConnectToken,
+      this.getDisabledModels(),
+    );
+    writePersistedSettings(this.settingsPath, this.persisted);
+  }
+
+  private proxyApiKeySource(): SettingsView["sources"]["proxyApiKey"] {
+    if (!proxyApiKeysEqual(this.current.proxyApiKeys, this.env.proxyApiKeys)) {
+      return this.current.proxyApiKeys.length > 0 ? "runtime" : "unset";
+    }
+    return this.env.proxyApiKeys.length > 0 ? "env" : "unset";
+  }
+
   getSettingsView(): SettingsView {
     const tools = toolsPolicyToView(this.current.toolsPolicy);
     return {
@@ -266,7 +363,7 @@ export class ConfigStore implements ConfigProvider {
       adminUsername: this.current.adminUsername,
       secrets: {
         cursorApiKey: Boolean(this.current.cursorApiKey),
-        proxyApiKey: Boolean(this.current.proxyApiKey),
+        proxyApiKey: this.current.proxyApiKeys.some((key) => key.enabled),
         connectAuthToken: Boolean(this.current.connectAuthToken),
         connectAuthTokenAuto: !this.current.connectAuthToken,
         adminPassword: Boolean(this.current.adminPassword),
@@ -276,14 +373,7 @@ export class ConfigStore implements ConfigProvider {
         runtime: this.persisted.runtime ? "runtime" : "env",
         toolsPolicy: this.persisted.toolsPolicy ? "runtime" : "env",
         cwd: this.persisted.cwd ? "runtime" : "env",
-        proxyApiKey:
-          this.persisted.proxyApiKey === null
-            ? "unset"
-            : this.persisted.proxyApiKey
-              ? "runtime"
-              : this.env.proxyApiKey
-                ? "env"
-                : "unset",
+        proxyApiKey: this.proxyApiKeySource(),
         connectAuthToken: this.current.connectAuthToken
           ? this.persisted.connectAuthToken
             ? "runtime"
@@ -327,9 +417,9 @@ export class ConfigStore implements ConfigProvider {
     }
 
     if (update.proxyApiKey === null) {
-      next.proxyApiKey = undefined;
+      next.proxyApiKeys = [];
     } else if (typeof update.proxyApiKey === "string" && update.proxyApiKey.trim()) {
-      next.proxyApiKey = update.proxyApiKey.trim();
+      next.proxyApiKeys = [newProxyApiKey(update.proxyApiKey.trim(), "Saved key")];
     }
 
     if (update.connectAuthToken === null) {
@@ -354,13 +444,7 @@ export class ConfigStore implements ConfigProvider {
     }
 
     this.current = next;
-    this.persisted = persistedFromState(
-      this.env,
-      next,
-      this.generatedConnectToken,
-      this.getDisabledModels(),
-    );
-    writePersistedSettings(this.settingsPath, this.persisted);
+    this.persistSettings();
     return this.current;
   }
 }

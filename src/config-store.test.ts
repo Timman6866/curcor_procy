@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { Config } from "./config.ts";
 import { ConfigStore } from "./config-store.ts";
+import { envProxyApiKeys } from "./proxy-api-keys.ts";
 
 const baseEnv: Config = {
   port: 8787,
   host: "127.0.0.1",
   cursorApiKey: "cursor-env",
-  proxyApiKey: undefined,
+  proxyApiKeys: [],
   connectAuthToken: undefined,
   defaultModel: "composer-2.5",
   runtime: "local",
@@ -18,6 +19,7 @@ const baseEnv: Config = {
   toolsPolicy: "full",
   adminUsername: "admin",
   adminPassword: "secret",
+  logPolicy: "standard",
 };
 
 test("applies and persists runtime settings", () => {
@@ -39,11 +41,47 @@ test("applies and persists runtime settings", () => {
     assert.equal(current.defaultModel, "composer-2.5-thinking");
     assert.equal(current.runtime, "cloud");
     assert.deepEqual(current.toolsPolicy, ["read", "mcp"]);
-    assert.equal(current.proxyApiKey, "proxy-runtime");
+    assert.equal(current.proxyApiKeys.length, 1);
+    assert.equal(current.proxyApiKeys[0]?.secret, "proxy-runtime");
 
     const reloaded = new ConfigStore(baseEnv, settingsPath, "generated-token");
     assert.equal(reloaded.get().defaultModel, "composer-2.5-thinking");
     assert.equal(reloaded.get().runtime, "cloud");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("adds and removes proxy API keys", () => {
+  const dir = mkdtempSync(join(tmpdir(), "proxy-settings-"));
+  const settingsPath = join(dir, "proxy-settings.json");
+
+  try {
+    const store = new ConfigStore(baseEnv, settingsPath, "generated-token");
+    const created = store.addProxyApiKey("Client A");
+    assert.match(created.secret, /^sk-proxy-/);
+    assert.equal(store.listProxyApiKeys().length, 1);
+
+    const removed = store.removeProxyApiKey(created.id);
+    assert.equal(removed, true);
+    assert.equal(store.listProxyApiKeys().length, 0);
+
+    const reloaded = new ConfigStore(baseEnv, settingsPath, "generated-token");
+    assert.equal(reloaded.listProxyApiKeys().length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("loads env proxy key as default key", () => {
+  const env = { ...baseEnv, proxyApiKeys: envProxyApiKeys("env-proxy-key") };
+  const dir = mkdtempSync(join(tmpdir(), "proxy-settings-"));
+  const settingsPath = join(dir, "proxy-settings.json");
+
+  try {
+    const store = new ConfigStore(env, settingsPath, "generated-token");
+    assert.equal(store.get().proxyApiKeys[0]?.secret, "env-proxy-key");
+    assert.equal(store.listProxyApiKeys()[0]?.source, "env");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

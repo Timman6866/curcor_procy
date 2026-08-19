@@ -1,0 +1,53 @@
+services:
+  cursor-openai-proxy-nolog:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LOG_POLICY: no-log
+    image: cursor-openai-proxy:no-log
+    container_name: cursor-openai-proxy-nolog
+    restart: unless-stopped
+    logging:
+      driver: none
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      LOG_POLICY: no-log
+      CONNECT_AUTH_TOKEN: ${CONNECT_AUTH_TOKEN:?CONNECT_AUTH_TOKEN is required for the no-log image}
+      CURSOR_RUNTIME: ${CURSOR_RUNTIME:-cloud}
+      CURSOR_CWD: /workspace
+      CURSOR_TOOLS: ${CURSOR_TOOLS:-full}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    ports:
+      - "${PORT:-8787}:8787"
+    volumes:
+      - proxy-scratch-nolog:/app/.scratch
+      - ${CURSOR_AGENT_DIR:-/home/docker-user/.local/share/cursor-agent}:/opt/cursor-agent:ro
+      - ${CURSOR_WORKSPACE:-.}:/workspace:rw
+    entrypoint: ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - docker_default
+
+networks:
+  docker_default:
+    name: docker_default
+    external: true
+
+volumes:
+  proxy-scratch-nolog:
