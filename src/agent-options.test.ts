@@ -7,12 +7,15 @@ const baseConfig: Config = {
   port: 8787,
   host: "127.0.0.1",
   cursorApiKey: "test-key",
-  proxyApiKey: undefined,
+  proxyApiKeys: [],
   connectAuthToken: undefined,
   defaultModel: "composer-2.5",
   runtime: "local",
   cwd: "/tmp/scratch",
   toolsPolicy: "full",
+  adminUsername: "admin",
+  adminPassword: undefined,
+  logPolicy: "standard",
 };
 
 test("defaults to the full Cursor tool suite", () => {

@@ -11,18 +11,22 @@ COPY src ./src
 RUN npm run build:prod
 
 FROM node:22-bookworm-slim AS runtime
+ARG LOG_POLICY=standard
 WORKDIR /app
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
-    CURSOR_RUNTIME=cloud
+    CURSOR_RUNTIME=cloud \
+    LOG_POLICY=${LOG_POLICY}
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
+
+RUN if [ "$LOG_POLICY" = "no-log" ]; then find /app/dist -name '*.map' -delete; fi
 
 RUN mkdir -p /app/.scratch && chown -R node:node /app && chmod +x /app/scripts/docker-entrypoint.sh
 USER node

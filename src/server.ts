@@ -1,24 +1,60 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import { registerAdminRoutes, registerRequestLogging } from "./admin.ts";
 import { registerConnectGateway } from "./connect/gateway.ts";
-import { authorize } from "./config.ts";
-import type { ConfigProvider } from "./config-store.ts";
+import { authorize, type AuthResult } from "./config.ts";
+import type { ConfigProvider, ConfigStore } from "./config-store.ts";
 import { complete, listModels, streamComplete } from "./cursor-backend.ts";
+import { fastifyLoggingEnabled, getLogPolicy, requestLoggingEnabled } from "./logging.ts";
 import { normalizeBody } from "./normalize.ts";
 import {
   chatChunk,
   chatCompletion,
+  emptyUsage,
   modelsList,
   newId,
   openaiError,
   responseObject,
   streamToolCallChunks,
+  type TokenCounts,
 } from "./openai-format.ts";
+import { keyPrefix } from "./proxy-api-keys.ts";
+import { checkKeyQuota, QuotaExceededError, recordKeyUsage } from "./usage-meter.ts";
 
-export function buildServer(configStore: ConfigProvider) {
-  const app = Fastify({ logger: true });
+function findProxyKey(config: ReturnType<ConfigStore["get"]>, keyId: string) {
+  return config.proxyApiKeys.find((key) => key.id === keyId);
+}
+
+function assertAuthQuota(config: ReturnType<ConfigStore["get"]>, auth: AuthResult): void {
+  if (!auth.proxyKeyId) return;
+  const key = findProxyKey(config, auth.proxyKeyId);
+  if (!key) return;
+  checkKeyQuota(auth.proxyKeyId, key.quota);
+}
+
+function meterAuthUsage(
+  config: ReturnType<ConfigStore["get"]>,
+  auth: AuthResult,
+  usage: TokenCounts = emptyUsage(),
+  requestDelta = 1,
+): void {
+  if (!auth.proxyKeyId) return;
+  const key = findProxyKey(config, auth.proxyKeyId);
+  if (!key) return;
+  recordKeyUsage(
+    auth.proxyKeyId,
+    { label: key.label, prefix: keyPrefix(key.secret) },
+    usage,
+    requestDelta,
+  );
+}
+
+export function buildServer(configStore: ConfigStore) {
+  const logPolicy = getLogPolicy();
+  const app = Fastify({ logger: fastifyLoggingEnabled(logPolicy) });
   registerConnectGateway(app, configStore);
-  registerRequestLogging(app);
+  if (requestLoggingEnabled(logPolicy)) {
+    registerRequestLogging(app);
+  }
   registerAdminRoutes(app, configStore);
 
   app.get("/health", async () => ({ ok: true }));
@@ -33,8 +69,10 @@ export function buildServer(configStore: ConfigProvider) {
   app.get("/v1/models", async (request, reply) => {
     try {
       const config = configStore.get();
-      const apiKey = authorize(config, request.headers);
-      const ids = configStore.filterModelIds(await listModels(config, apiKey));
+      const auth = authorize(config, request.headers);
+      assertAuthQuota(config, auth);
+      meterAuthUsage(config, auth);
+      const ids = configStore.filterModelIds(await listModels(config, auth.cursorApiKey));
       return modelsList(ids);
     } catch (error) {
       return sendError(reply, error);
@@ -60,11 +98,13 @@ async function handleCompletion(
 ) {
   try {
     const config = configStore.get();
-    const apiKey = authorize(config, request.headers);
+    const auth = authorize(config, request.headers);
+    assertAuthQuota(config, auth);
     const normalized = normalizeBody(request.body);
 
     if (!normalized.stream) {
-      const result = await complete(config, apiKey, normalized);
+      const result = await complete(config, auth.cursorApiKey, normalized);
+      meterAuthUsage(config, auth, result.usage);
       const created = Math.floor(Date.now() / 1000);
       const responseModel = normalized.displayModel ?? result.model;
       if (flavor === "responses") {
@@ -88,7 +128,7 @@ async function handleCompletion(
       });
     }
 
-    return await streamReply(configStore, apiKey, normalized, reply, flavor);
+    return await streamReply(configStore, auth, normalized, reply, flavor);
   } catch (error) {
     return sendError(reply, error);
   }
@@ -96,7 +136,7 @@ async function handleCompletion(
 
 async function streamReply(
   configStore: ConfigProvider,
-  apiKey: string,
+  auth: AuthResult,
   normalized: ReturnType<typeof normalizeBody>,
   reply: FastifyReply,
   flavor: "chat" | "responses",
@@ -106,6 +146,7 @@ async function streamReply(
   const created = Math.floor(Date.now() / 1000);
   const abort = new AbortController();
   const responseModel = normalized.displayModel ?? normalized.model ?? config.defaultModel;
+  let usage = emptyUsage();
 
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -138,7 +179,7 @@ async function streamReply(
       );
     }
 
-    const result = await streamComplete(config, apiKey, normalized, {
+    const result = await streamComplete(config, auth.cursorApiKey, normalized, {
       onAbort: abort.signal,
       onText: (text) => {
         if (flavor === "responses") {
@@ -183,6 +224,8 @@ async function streamReply(
       },
     });
 
+    usage = result.usage;
+
     if (flavor === "responses") {
       writeEvent(responseObject({
         id,
@@ -208,16 +251,25 @@ async function streamReply(
     const message = error instanceof Error ? error.message : "Proxy error";
     writeEvent({ error: { message, type: "server_error" } });
   } finally {
+    meterAuthUsage(configStore.get(), auth, usage);
     reply.raw.end();
   }
 }
 
 function sendError(reply: FastifyReply, error: unknown) {
   const statusCode =
-    typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number"
-      ? error.statusCode
-      : 500;
+    error instanceof QuotaExceededError
+      ? 429
+      : typeof error === "object" && error && "statusCode" in error && typeof error.statusCode === "number"
+        ? error.statusCode
+        : 500;
   const message = error instanceof Error ? error.message : "Internal server error";
-  const payload = openaiError(statusCode, message, statusCode === 401 ? "invalid_request_error" : "server_error");
+  const errorType =
+    statusCode === 401
+      ? "invalid_request_error"
+      : statusCode === 429
+        ? "rate_limit_exceeded"
+        : "server_error";
+  const payload = openaiError(statusCode, message, errorType);
   return reply.code(statusCode).send({ error: payload.error });
 }

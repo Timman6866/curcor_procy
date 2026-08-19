@@ -88,9 +88,37 @@ const res = await client.chat.completions.create({
 });
 ```
 
-Set `PROXY_API_KEY` if you want OpenAI REST clients to send a separate key from the Cursor credential.
+Set `PROXY_API_KEY` to seed one proxy key from the environment, or create additional keys in **Admin → Settings**. Each key is shown once when generated; usage counters (requests and tokens) are tracked in memory and reset on restart.
 
-Set `CONNECT_AUTH_TOKEN` to pin the Connect bridge bearer token; otherwise one is generated at startup and logged once.
+## Proxy API keys and usage metering
+
+When one or more proxy API keys are enabled, REST clients must send one as `Authorization: Bearer ...` or `x-api-key`. The admin UI lets you:
+
+- **Generate** labeled keys (`POST /admin/api/proxy-keys`)
+- **Remove** keys (`DELETE /admin/api/proxy-keys/:id`)
+- View **ephemeral usage** per key (request count and token totals since last restart)
+
+`PROXY_API_KEY` in `.env` seeds an environment key. Runtime keys are persisted to `proxy-settings.json`. Aggregate usage (lifetime, daily rollups, month-to-date) is persisted to `proxy-usage.json` in the same scratch directory. Removed keys keep their usage history. Per-key token quotas can be set in the admin UI.
+
+Set `CONNECT_AUTH_TOKEN` to pin the Connect bridge bearer token; otherwise one is generated at startup and logged once (standard image only). The **no-log** image requires a pre-set token and never prints it.
+
+## Logging policy (`LOG_POLICY`)
+
+Two Docker images are supported:
+
+| Image | Build | Logging |
+| --- | --- | --- |
+| `cursor-openai-proxy:standard` | `npm run docker:build:standard` | Fastify access logs, admin request log, startup info |
+| `cursor-openai-proxy:no-log` | `npm run docker:build:nolog` | No request metadata, no admin request log, Docker `logging: none` |
+
+```bash
+npm run docker:build:all
+```
+
+- **Standard** (default): `docker compose up -d`
+- **No-log**: set `CONNECT_AUTH_TOKEN` in `.env`, then `docker compose -f docker-compose.nolog.yml up -d`
+
+Only one service should bind port `8787` at a time. See [PRIVACY.md](./PRIVACY.md) for details and SDK caveats.
 
 ## Connect example
 
@@ -232,8 +260,13 @@ chmod +x scripts/setup.sh scripts/smoke.sh
 Or manually:
 
 ```bash
-docker compose up -d --build
-docker compose logs -f
+docker compose up -d --build          # standard image
+# or build both tags:
+npm run docker:build:all
+
+# strict no-log variant (requires CONNECT_AUTH_TOKEN in .env):
+docker compose -f docker-compose.nolog.yml up -d --build
+docker compose logs -f                # standard only; no-log uses logging driver none
 ```
 
 The container listens on `0.0.0.0:8787`, uses **`CURSOR_RUNTIME=cloud` by default**, and persists scratch data in the `proxy-scratch` volume.

@@ -1,18 +1,26 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseLogPolicy, type LogPolicy } from "./logging.ts";
+import {
+  envProxyApiKeys,
+  findProxyKeyBySecret,
+  proxyAuthEnabled,
+  type ProxyApiKey,
+} from "./proxy-api-keys.ts";
 import { parseToolsPolicy, type ToolsPolicy } from "./tools-policy.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, "..");
 
 export type Runtime = "local" | "cloud";
+export type AuthMethod = "proxy-key" | "cursor-key" | "open";
 
 export interface Config {
   port: number;
   host: string;
   cursorApiKey: string;
-  proxyApiKey: string | undefined;
+  proxyApiKeys: ProxyApiKey[];
   connectAuthToken: string | undefined;
   defaultModel: string;
   runtime: Runtime;
@@ -20,6 +28,13 @@ export interface Config {
   toolsPolicy: ToolsPolicy;
   adminUsername: string;
   adminPassword: string | undefined;
+  logPolicy: LogPolicy;
+}
+
+export interface AuthResult {
+  cursorApiKey: string;
+  method: AuthMethod;
+  proxyKeyId?: string;
 }
 
 function requiredEnv(name: string): string {
@@ -43,7 +58,7 @@ export function loadConfig(): Config {
     port: Number(process.env.PORT ?? 8787),
     host: process.env.HOST?.trim() || "127.0.0.1",
     cursorApiKey: requiredEnv("CURSOR_API_KEY"),
-    proxyApiKey: process.env.PROXY_API_KEY?.trim() || undefined,
+    proxyApiKeys: envProxyApiKeys(process.env.PROXY_API_KEY),
     connectAuthToken: process.env.CONNECT_AUTH_TOKEN?.trim() || undefined,
     defaultModel: process.env.DEFAULT_MODEL?.trim() || "composer-2.5",
     runtime,
@@ -51,6 +66,7 @@ export function loadConfig(): Config {
     toolsPolicy: parseToolsPolicy(process.env.CURSOR_TOOLS),
     adminUsername: process.env.ADMIN_USERNAME?.trim() || "admin",
     adminPassword: process.env.ADMIN_PASSWORD?.trim() || undefined,
+    logPolicy: parseLogPolicy(process.env.LOG_POLICY),
   };
 }
 
@@ -81,24 +97,41 @@ export function extractPresentedApiKey(headers: RequestAuthHeaders): string | un
   return undefined;
 }
 
-export function authorize(config: Config, headers: RequestAuthHeaders): string {
+export function authorize(config: Config, headers: RequestAuthHeaders): AuthResult {
   const presented = extractPresentedApiKey(headers);
 
-  if (config.proxyApiKey) {
+  if (proxyAuthEnabled(config.proxyApiKeys)) {
     if (!presented) {
       throw Object.assign(
         new Error("API key required. Send your proxy API key as Authorization Bearer or x-api-key."),
         { statusCode: 401 },
       );
     }
-    if (presented === config.proxyApiKey || presented === config.cursorApiKey) {
-      return config.cursorApiKey;
+
+    const matchedProxyKey = findProxyKeyBySecret(config.proxyApiKeys, presented);
+    if (matchedProxyKey) {
+      return {
+        cursorApiKey: config.cursorApiKey,
+        method: "proxy-key",
+        proxyKeyId: matchedProxyKey.id,
+      };
     }
+
+    if (presented === config.cursorApiKey) {
+      return {
+        cursorApiKey: config.cursorApiKey,
+        method: "cursor-key",
+      };
+    }
+
     throw Object.assign(
-      new Error("Invalid API key. Use the proxy API key from admin Settings, not your Cursor dashboard key."),
+      new Error("Invalid API key. Use a proxy API key from admin Settings, not your Cursor dashboard key."),
       { statusCode: 401 },
     );
   }
 
-  return presented || config.cursorApiKey;
+  return {
+    cursorApiKey: presented || config.cursorApiKey,
+    method: presented ? "cursor-key" : "open",
+  };
 }
