@@ -23,7 +23,12 @@ export interface NormalizedImage {
 }
 
 import { parseOpenAiTools, type OpenAiFunctionTool } from "./openai-tools.ts";
-import { parseReasoningOptions, stripThinkingModelSuffix, type ReasoningOptions } from "./reasoning.ts";
+import {
+  parseModelVariants,
+  resolveModelBaseId,
+  type FastOptions,
+  type ReasoningOptions,
+} from "./model-variants.ts";
 
 export interface NormalizedRequest {
   model: string | undefined;
@@ -33,6 +38,7 @@ export interface NormalizedRequest {
   messages: NormalizedMessage[];
   tools: OpenAiFunctionTool[];
   reasoning: ReasoningOptions;
+  fast: FastOptions;
 }
 
 const PLACEHOLDER_MODELS = new Set([
@@ -49,10 +55,9 @@ const PLACEHOLDER_MODELS = new Set([
 ]);
 
 export function resolveModel(requested: string | undefined, fallback: string): string {
-  const model = requested?.trim();
-  const stripped = model ? stripThinkingModelSuffix(model) : undefined;
-  if (!stripped || PLACEHOLDER_MODELS.has(stripped)) return fallback;
-  return stripped;
+  const baseId = resolveModelBaseId(requested, fallback);
+  if (!baseId || PLACEHOLDER_MODELS.has(baseId)) return fallback;
+  return baseId;
 }
 
 export function normalizeBody(body: unknown): NormalizedRequest {
@@ -66,6 +71,7 @@ export function normalizeBody(body: unknown): NormalizedRequest {
   }
 
   const requestedModel = typeof raw.model === "string" ? raw.model : undefined;
+  const variants = parseModelVariants(requestedModel, raw);
 
   return {
     model: requestedModel,
@@ -74,7 +80,8 @@ export function normalizeBody(body: unknown): NormalizedRequest {
     includeUsage: isRecord(raw.stream_options) && raw.stream_options.include_usage === true,
     messages,
     tools: parseOpenAiTools(raw.tools),
-    reasoning: parseReasoningOptions(requestedModel, raw),
+    reasoning: variants.reasoning,
+    fast: variants.fast,
   };
 }
 

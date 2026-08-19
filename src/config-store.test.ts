@@ -78,3 +78,20 @@ test("regenerates connect token when requested", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("persists disabled model visibility", () => {
+  const dir = mkdtempSync(join(tmpdir(), "proxy-settings-"));
+  const settingsPath = join(dir, "proxy-settings.json");
+
+  try {
+    const store = new ConfigStore(baseEnv, settingsPath, "generated-token");
+    store.setDisabledModels(["grok-4.6", "gpt-5.5"]);
+    assert.deepEqual(store.filterModelIds(["composer-2.5", "grok-4.6", "gpt-5.5"]), ["composer-2.5"]);
+
+    const reloaded = new ConfigStore(baseEnv, settingsPath, "generated-token");
+    assert.deepEqual(reloaded.getDisabledModels(), ["gpt-5.5", "grok-4.6"]);
+    assert.deepEqual(reloaded.filterModelIds(["composer-2.5", "grok-4.6"]), ["composer-2.5"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

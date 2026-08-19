@@ -57,6 +57,30 @@ test("passes reasoning params when enabled", () => {
   });
 });
 
+test("passes fast params when enabled", () => {
+  const options = buildAgentOptions(baseConfig, "key", "composer-2.5", {
+    fast: { enabled: true },
+  });
+  assert.deepEqual(options.model, {
+    id: "composer-2.5",
+    params: [{ id: "fast", value: "true" }],
+  });
+});
+
+test("passes fast and reasoning params together", () => {
+  const options = buildAgentOptions(baseConfig, "key", "composer-2.5", {
+    fast: { enabled: false },
+    reasoning: { enabled: true, effort: "medium" },
+  });
+  assert.deepEqual(options.model, {
+    id: "composer-2.5",
+    params: [
+      { id: "fast", value: "false" },
+      { id: "reasoning_effort", value: "medium" },
+    ],
+  });
+});
+
 test("parses connect CreateAgent tool options", () => {
   const parsed = parseAgentRequestOptions(baseConfig, {
     local: { cwd: ["/repo"] },

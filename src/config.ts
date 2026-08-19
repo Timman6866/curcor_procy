@@ -56,18 +56,48 @@ export function loadConfig(): Config {
 
 export function parseBearer(header: string | undefined): string | undefined {
   if (!header) return undefined;
-  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-  return match?.[1]?.trim() || undefined;
+  const trimmed = header.trim();
+  const match = /^Bearer\s+(.+)$/i.exec(trimmed);
+  if (match) return match[1]?.trim() || undefined;
+  return trimmed;
 }
 
-export function authorize(config: Config, authorization: string | undefined): string {
-  const presented = parseBearer(authorization);
+export interface RequestAuthHeaders {
+  authorization?: string;
+  "x-api-key"?: string;
+  "api-key"?: string;
+}
+
+export function extractPresentedApiKey(headers: RequestAuthHeaders): string | undefined {
+  const bearer = parseBearer(headers.authorization);
+  if (bearer) return bearer;
+
+  const xApiKey = headers["x-api-key"];
+  if (typeof xApiKey === "string" && xApiKey.trim()) return xApiKey.trim();
+
+  const apiKey = headers["api-key"];
+  if (typeof apiKey === "string" && apiKey.trim()) return apiKey.trim();
+
+  return undefined;
+}
+
+export function authorize(config: Config, headers: RequestAuthHeaders): string {
+  const presented = extractPresentedApiKey(headers);
 
   if (config.proxyApiKey) {
-    if (!presented || presented !== config.proxyApiKey) {
-      throw Object.assign(new Error("Invalid API key"), { statusCode: 401 });
+    if (!presented) {
+      throw Object.assign(
+        new Error("API key required. Send your proxy API key as Authorization Bearer or x-api-key."),
+        { statusCode: 401 },
+      );
     }
-    return config.cursorApiKey;
+    if (presented === config.proxyApiKey || presented === config.cursorApiKey) {
+      return config.cursorApiKey;
+    }
+    throw Object.assign(
+      new Error("Invalid API key. Use the proxy API key from admin Settings, not your Cursor dashboard key."),
+      { statusCode: 401 },
+    );
   }
 
   return presented || config.cursorApiKey;

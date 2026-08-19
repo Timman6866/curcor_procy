@@ -10,7 +10,7 @@ import {
 import type { NormalizedImage, NormalizedRequest } from "./normalize.ts";
 import { collectImages, resolveModel, toPrompt } from "./normalize.ts";
 import { emptyUsage, type TokenCounts } from "./openai-format.ts";
-import { expandModelCatalog } from "./reasoning.ts";
+import { expandModelCatalog } from "./model-variants.ts";
 
 export type FinishReason = "stop" | "tool_calls";
 
@@ -57,7 +57,7 @@ function buildPrompt(request: NormalizedRequest): string {
 }
 
 function agentRequestOptions(request: NormalizedRequest) {
-  return { reasoning: request.reasoning };
+  return { reasoning: request.reasoning, fast: request.fast };
 }
 
 async function runAgentTurn(

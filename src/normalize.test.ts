@@ -41,7 +41,16 @@ test("maps thinking model ids and enables reasoning", () => {
   assert.equal(resolveModel(req.model, "composer-2.5"), "composer-2.5");
 });
 
+test("maps fast model ids and enables fast param", () => {
+  const req = normalizeBody({
+    model: "composer-2.5-fast",
+    messages: [{ role: "user", content: "Go" }],
+  });
+  assert.equal(req.fast.enabled, true);
+  assert.equal(resolveModel(req.model, "composer-2.5"), "composer-2.5");
+});
+
 test("maps placeholder OpenAI model ids to the default", () => {
   assert.equal(resolveModel("gpt-4o", "composer-2.5"), "composer-2.5");
-  assert.equal(resolveModel("composer-2.5-fast", "composer-2.5"), "composer-2.5-fast");
+  assert.equal(resolveModel("composer-2.5-fast", "composer-2.5"), "composer-2.5");
 });

@@ -1,6 +1,6 @@
-import type { AgentModeOption, AgentOptions, McpServerConfig, ModelParameterValue, ToolName } from "@cursor/sdk";
+import type { AgentModeOption, AgentOptions, McpServerConfig, ToolName } from "@cursor/sdk";
 import type { Config, Runtime } from "./config.ts";
-import type { ReasoningOptions } from "./reasoning.ts";
+import { buildModelParams, type FastOptions, type ReasoningOptions } from "./model-variants.ts";
 import type { ToolsPolicy } from "./tools-policy.ts";
 
 export type { ToolsPolicy } from "./tools-policy.ts";
@@ -15,6 +15,7 @@ export interface ParsedAgentRequestOptions {
   cwd?: string;
   cloudRepos?: Array<{ url: string; startingRef?: string; prUrl?: string }>;
   reasoning?: ReasoningOptions;
+  fast?: FastOptions;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -124,13 +125,6 @@ function applyToolsPolicy(
   return options;
 }
 
-function reasoningParams(reasoning?: ReasoningOptions): ModelParameterValue[] | undefined {
-  if (!reasoning?.enabled) return undefined;
-  const effort = reasoning.effort?.trim();
-  if (!effort) return [{ id: "reasoning_effort", value: "medium" }];
-  return [{ id: "reasoning_effort", value: effort }];
-}
-
 export function buildAgentOptions(
   config: Config,
   apiKey: string,
@@ -140,7 +134,7 @@ export function buildAgentOptions(
   const runtime = request.runtime ?? config.runtime;
   const cwd = request.cwd ?? config.cwd;
   const tools = request.tools ?? config.toolsPolicy;
-  const params = reasoningParams(request.reasoning);
+  const params = buildModelParams(request.reasoning ?? { enabled: false }, request.fast ?? {});
 
   const options: AgentOptions = {
     apiKey,

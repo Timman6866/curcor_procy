@@ -23,7 +23,7 @@ if ! command -v zenflow >/dev/null 2>&1; then
 fi
 
 export COMPAT_BASE_URL="${COMPAT_BASE_URL:-http://127.0.0.1:8787/v1}"
-export COMPAT_API_KEY="${COMPAT_API_KEY:-$CURSOR_API_KEY}"
+export COMPAT_API_KEY="${COMPAT_API_KEY:-${PROXY_API_KEY:-$CURSOR_API_KEY}}"
 
 MODEL="${1:-compat/composer-2.5-thinking}"
 

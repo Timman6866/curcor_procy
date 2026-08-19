@@ -155,17 +155,56 @@ If the model chooses a tool, the response has `finish_reason: "tool_calls"` and 
 
 When `tools` is omitted, the proxy uses Cursor's built-in agent tools instead of OpenAI function calling.
 
+## Model speed (Fast / Standard)
+
+In Cursor, **plain `composer-2.5` is already the fast tier** (the product default). Standard is the unusual opt-in variant. Other model families may expose fast as a separate slug (e.g. `cursor-grok-4.5-high-fast`).
+
+The proxy maps speed the same way as reasoning: model-id suffixes, request fields, or Cursor bracket syntax resolve to SDK `fast` params.
+
+| Selector | Example | Effect |
+| --- | --- | --- |
+| Default (fast) | `composer-2.5` | Cursor fast tier; no `fast` param sent |
+| Explicit fast slug | `composer-2.5-fast` | Same as base (`fast=true`) |
+| Standard | `composer-2.5-standard` | Non-fast tier (`fast=false`) |
+| Request field | `"fast": false` or `"model_speed": "standard"` | Forces standard on the resolved base model |
+| Bracket syntax | `composer-2.5[fast=false]` | Same as Cursor subagent frontmatter |
+
+`/v1/models` lists `-standard` and `-thinking` aliases for Composer bases (fast is already the default id). Other models also get `-fast` variants when applicable.
+
+Combined example:
+
+```json
+{
+  "model": "composer-2.5-thinking",
+  "messages": [{ "role": "user", "content": "Plan this refactor" }]
+}
+```
+
+That resolves to `composer-2.5` with `reasoning_effort=medium` on the default fast tier, and streams `reasoning_content` when the backend emits thinking deltas. Use `composer-2.5-standard-thinking` for standard + reasoning.
+
 ## Reasoning (selectable)
 
-Reasoning is **off by default**. Enable it per request in either of these ways:
+Reasoning is **off by default**. Enable it per request in any of these ways:
 
 | Selector | Example | Effect |
 | --- | --- | --- |
 | Thinking model id | `composer-2.5-thinking` | Enables reasoning and streams `reasoning_content` |
 | `reasoning_effort` | `"reasoning_effort": "high"` | Enables reasoning at the requested effort |
 | Disable on thinking id | `"reasoning_effort": "none"` | Forces reasoning off even for `*-thinking` models |
+| OpenAI-style body | `"reasoning": { "effort": "high" }` | Same as `reasoning_effort` |
+| Anthropic-style body | `"thinking": { "type": "enabled" }` | Enables reasoning at medium effort |
 
-`/v1/models` lists both base and `*-thinking` variants. OpenCode clients should declare `reasoning: true` and `interleaved.field: "reasoning_content"` on thinking model entries in `opencode.json`.
+Supported effort values are passed through to Cursor as `reasoning_effort` (`low`, `medium`, `high`, etc.). Use `none` / `off` / `false` to disable.
+
+Under the hood, the proxy:
+
+1. Parses the requested `model` id and body into `reasoning` + `fast` options (`src/model-variants.ts`).
+2. Strips suffixes like `-thinking`, `-fast`, and `-standard` to get the base model id sent to the SDK.
+3. Attaches SDK model params: `{ id: "reasoning_effort", value: "…" }` and/or `{ id: "fast", value: "true|false" }`.
+4. Keeps the original requested id in API responses as `displayModel` so clients see what they asked for.
+5. Streams `reasoning_content` chunks when reasoning is enabled (`src/server.ts`).
+
+`/v1/models` lists both base and variant ids. OpenCode clients should declare `reasoning: true` and `interleaved.field: "reasoning_content"` on thinking model entries in `opencode.json`.
 
 ## Behavior
 
