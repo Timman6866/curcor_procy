@@ -308,6 +308,36 @@ test("stream filter leaves mid-sentence toolName prose on flush", () => {
   assert.equal(parts.join(""), "Set the toolName: weather for the API.");
 });
 
+test("stream filter keeps inline-code toolName: split across chunks", () => {
+  // Screenshot shape: prose ends at opening backtick, next chunk starts with toolName:
+  const bt = "`";
+  const intended =
+    "Good \u2014 " +
+    bt +
+    "bd5a753" +
+    bt +
+    " is live.\n\nMid-sentence " +
+    bt +
+    "toolName:" +
+    bt +
+    " mentions stay intact now.";
+  const filter = createToolMarkupStreamFilter();
+  const parts = [
+    filter.push(
+      "Good \u2014 " + bt + "bd5a753" + bt + " is live.\n\nMid-sentence " + bt,
+    ),
+    filter.push("toolName:" + bt + " mentions stay intact now."),
+    filter.flush(),
+  ];
+  assert.equal(parts.join(""), intended);
+});
+
+test("stream filter does not hold short prose suffixes like the Tool", () => {
+  const filter = createToolMarkupStreamFilter();
+  const parts = [filter.push("See the Tool docs next."), filter.flush()];
+  assert.equal(parts.join(""), "See the Tool docs next.");
+});
+
 test("stream filter hides bare toolName dumps split across chunks", () => {
   const filter = createToolMarkupStreamFilter();
   const parts = [
