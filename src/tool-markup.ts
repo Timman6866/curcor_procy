@@ -635,21 +635,42 @@ function earliestHoldIndex(text: string): number {
 }
 
 function findIncompleteOpenSuffix(text: string): number {
-  const prefixes = [
-    TOOL_CALL_OPEN,
-    XML_TOOL_CALL_OPEN,
-    "Tool:",
-    "namespace:",
-    "toolName:",
-    "arguments:",
-  ];
-  for (const full of prefixes) {
+  // Bracket/XML opens can appear mid-stream with short partials.
+  for (const full of [TOOL_CALL_OPEN, XML_TOOL_CALL_OPEN]) {
     for (let len = 1; len < full.length; len++) {
       const partial = full.slice(0, len);
       if (text.endsWith(partial)) return text.length - len;
     }
   }
+
+  // Dump-field markers only count at a token boundary (start / whitespace),
+  // never after backticks or mid-word, and only once the partial is
+  // distinctive enough that ordinary prose ("the", "to", "a") is not held.
+  // "Tool:" incomplete holds rely on findPossibleToolDumpSuffix once the
+  // colon arrives; minLen 5 disables holding bare "Tool" ("the Tool").
+  const dumpPrefixes: { full: string; minLen: number }[] = [
+    { full: "Tool:", minLen: 5 },
+    { full: "namespace:", minLen: 5 },
+    { full: "toolName:", minLen: 5 },
+    { full: "arguments:", minLen: 5 },
+  ];
+  for (const { full, minLen } of dumpPrefixes) {
+    for (let len = minLen; len < full.length; len++) {
+      const partial = full.slice(0, len);
+      if (!text.endsWith(partial)) continue;
+      const at = text.length - len;
+      if (!isDumpMarkerTokenBoundary(text, at)) continue;
+      return at;
+    }
+  }
   return -1;
+}
+
+/** True when index is start-of-text or preceded by whitespace/newline. */
+function isDumpMarkerTokenBoundary(text: string, index: number): boolean {
+  if (index <= 0) return true;
+  const prev = text[index - 1]!;
+  return prev === " " || prev === "\t" || prev === "\n" || prev === "\r";
 }
 
 function findUnclosedToolCallStart(text: string): number {
@@ -714,22 +735,20 @@ function findPossibleToolDumpSuffix(text: string): number {
       return lineStartOffset(lines, i);
     }
 
-    if (TOOL_DUMP_FIELD_RE.test(trimmed) || /^[ \t]/.test(lines[i]!)) {
+    // Continuation / indented dump body — walk up to a real dump start.
+    // Do not treat field-prefix prose (e.g. chunk starting with toolName: + backtick prose)
+    // as a dump just because TOOL_DUMP_FIELD_RE matches the prefix.
+    if (
+      (TOOL_DUMP_FIELD_RE.test(trimmed) && isDumpShapedFieldLine(trimmed)) ||
+      /^[ \t]/.test(lines[i]!)
+    ) {
       for (let j = i; j >= 0; j--) {
         const t = lines[j]!.trim();
         if (
           TOOL_DUMP_HEADER_RE.test(t) ||
           looksLikeHarnessNamespace(t) ||
-          BARE_TOOLNAME_LINE_RE.test(t)
-        ) {
-          return lineStartOffset(lines, j);
-        }
-      }
-      for (let j = 0; j <= i; j++) {
-        if (
-          TOOL_DUMP_FIELD_RE.test(lines[j]!.trim()) ||
-          looksLikeHarnessNamespace(lines[j]!.trim()) ||
-          BARE_TOOLNAME_LINE_RE.test(lines[j]!.trim())
+          BARE_TOOLNAME_LINE_RE.test(t) ||
+          isDumpShapedFieldLine(t)
         ) {
           return lineStartOffset(lines, j);
         }
@@ -753,6 +772,42 @@ function findPossibleToolDumpSuffix(text: string): number {
     break;
   }
   return -1;
+}
+
+/**
+ * True when a TOOL_DUMP_FIELD_RE line looks like a real dump value, not prose
+ * that happens to start with toolName: / arguments: (e.g. inline code).
+ */
+function isDumpShapedFieldLine(trimmed: string): boolean {
+  const field = trimmed.match(
+    /^(namespace|toolName|tool_name|arguments|args|description|mcpDetails)\s*:\s*(.*)$/i,
+  );
+  if (!field) return false;
+  const name = field[1]!.toLowerCase();
+  const rest = field[2] ?? "";
+  if (!rest.trim()) return true; // incomplete field — hold
+  if (name === "namespace") {
+    return /^(custom-user-tools|cursor|mcp)\b/i.test(rest);
+  }
+  if (name === "toolname" || name === "tool_name") {
+    if (/^[A-Za-z][A-Za-z0-9_-]*\s*$/.test(rest)) return true;
+    if (
+      /^[A-Za-z][A-Za-z0-9_-]*\s+(?:arguments|args|namespace)\s*:/i.test(rest)
+    ) {
+      return true;
+    }
+    if (/^[{\[]/.test(rest.trim())) return true;
+    return false;
+  }
+  if (name === "arguments" || name === "args") {
+    const t = rest.trim();
+    if (!t || /^[{\[]/.test(t)) return true;
+    if (/^(command|file_path|query|path)\s*:/.test(t)) return true;
+    if (looksLikeDumpBody(t)) return true;
+    return false;
+  }
+  // description / mcpDetails — dump-ish when under a dump context.
+  return true;
 }
 
 function lineStartOffset(lines: string[], index: number): number {
@@ -785,10 +840,15 @@ function looksLikeIncompleteOrphan(line: string): boolean {
   if (!trimmed) return false;
   if (isOrphanFragmentLine(trimmed)) return true;
   if (/^Tool:\s*/.test(trimmed)) return true;
-  if (/^namespace:\s*/i.test(trimmed)) return true;
-  if (/^toolName:\s*/i.test(trimmed)) return true;
-  if (/^arguments:\s*/i.test(trimmed)) return true;
-  // Mid-sentence toolName:/namespace: prose must not be dropped on flush.
+  // Field-prefix lines must look dump-shaped — not inline code like `toolName:`.
+  if (
+    /^(?:namespace|toolName|arguments)\s*:/i.test(trimmed) &&
+    isDumpShapedFieldLine(trimmed)
+  ) {
+    return true;
+  }
+  // Mid-sentence confirmed inline dumps must not be dropped on flush as orphans
+  // unless they are dump-shaped; earliestInlineDumpIndex already gates that.
   if (earliestInlineDumpIndex(" " + trimmed) >= 0) return true;
   return (
     /^(?:[A-Za-z0-9_-]+\s+)?name=(?:Call|Get)/.test(trimmed) ||
