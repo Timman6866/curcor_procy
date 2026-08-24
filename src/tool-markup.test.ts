@@ -235,3 +235,55 @@ test("stream filter hides inline namespace dumps split across chunks", () => {
   assert.doesNotMatch(result, /namespace:/);
   assert.doesNotMatch(result, /toolName:/);
 });
+
+test("strips bare toolName/arguments dumps without Tool or namespace header", () => {
+  const input = [
+    "Prod is healthy and the branch is synced.",
+    "toolName: Bash",
+    "arguments: command: |",
+    "  python3 <<'PY'",
+    "  print('probe')",
+    "  PY",
+    "Next I'll confirm the running image.",
+  ].join("\n");
+
+  const result = stripToolMarkup(input);
+  assert.match(result, /Prod is healthy/);
+  assert.match(result, /Next I'll confirm/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /arguments:/);
+  assert.doesNotMatch(result, /python3/);
+});
+
+test("strips inline toolName dump glued to prose", () => {
+  const input =
+    'paths.toolName: Bash arguments: {"command":"REPO=/tmp find . -name tool-markup"}';
+
+  const result = stripToolMarkup(input);
+  assert.match(result, /paths/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /arguments:/);
+  assert.doesNotMatch(result, /REPO=/);
+});
+
+test("leaves ordinary arguments: prose alone", () => {
+  const input = "The function takes three arguments: name, age, and city.";
+  assert.equal(stripToolMarkup(input), input);
+});
+
+test("stream filter hides bare toolName dumps split across chunks", () => {
+  const filter = createToolMarkupStreamFilter();
+  const parts = [
+    filter.push("Checking prod.\n"),
+    filter.push("toolName: Bash\n"),
+    filter.push("arguments: command: ls\n"),
+    filter.push("All clear."),
+    filter.flush(),
+  ];
+
+  const result = parts.join("");
+  assert.match(result, /Checking prod/);
+  assert.match(result, /All clear/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /arguments:/);
+});

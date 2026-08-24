@@ -19,10 +19,17 @@ const TOOL_DUMP_HEADER_RE = new RegExp(
 const TOOL_DUMP_FIELD_RE =
   /^(namespace|toolName|tool_name|arguments|args|description|mcpDetails)\s*:\s*/;
 
+/** Bare field line that can start a dump without Tool:/namespace: header. */
+const BARE_TOOLNAME_LINE_RE =
+  /^toolName:\s*[A-Za-z][A-Za-z0-9_-]*\s*$/i;
+
+const BARE_ARGUMENTS_LINE_RE = /^arguments:\s*/i;
+
 /**
  * Inline dump glued to prose, e.g.
  * `...icons.namespace: custom-user-tools toolName: Read ...`
  * or `...docs. Tool: CallDynamicTool namespace: ...`
+ * or `...paths.toolName: Bash arguments: {...}`
  */
 const INLINE_NAMESPACE_DUMP_RE =
   /(?:^|[.\s])namespace:\s*(?:custom-user-tools|cursor|mcp)\b/i;
@@ -30,6 +37,9 @@ const INLINE_NAMESPACE_DUMP_RE =
 const INLINE_TOOL_HEADER_RE = new RegExp(
   String.raw`(?:^|[.\s])Tool:\s*(?:${DYNAMIC_TOOL_NAMES})\b`,
 );
+
+const INLINE_TOOLNAME_DUMP_RE =
+  /(?:^|[.\s])toolName:\s*[A-Za-z][A-Za-z0-9_-]*\b/i;
 
 export interface ToolMarkupStreamFilter {
   push(chunk: string): string;
@@ -113,8 +123,9 @@ function stripXmlToolCalls(text: string): string {
 /**
  * Cut dumps glued mid-prose (same line), e.g.
  * `...icons.namespace: custom-user-tools ...` or `...docs. Tool: CallDynamicTool ...`
- * Line-start dumps (`\nTool:` / `\nnamespace:`) are left for stripToolDumps so we
- * do not eat trailing punctuation from the previous sentence.
+ * or `...paths.toolName: Bash arguments: {...}`
+ * Line-start dumps are left for stripToolDumps so we do not eat trailing
+ * punctuation from the previous sentence.
  */
 function stripInlineToolDumps(text: string): string {
   let result = text;
@@ -124,7 +135,6 @@ function stripInlineToolDumps(text: string): string {
     const cutAt = earliestInlineDumpIndex(result);
     if (cutAt < 0) break;
 
-    // Match starts at a glued separator (`.` or horizontal space).
     const lead = result[cutAt]!;
     const dumpStart = lead === "." || lead === " " || lead === "\t" ? cutAt + 1 : cutAt;
     const cleanBefore = result.slice(0, cutAt);
@@ -137,12 +147,15 @@ function stripInlineToolDumps(text: string): string {
 
 function earliestInlineDumpIndex(text: string): number {
   let best = -1;
-  for (const re of [INLINE_NAMESPACE_DUMP_RE, INLINE_TOOL_HEADER_RE]) {
+  for (const re of [
+    INLINE_NAMESPACE_DUMP_RE,
+    INLINE_TOOL_HEADER_RE,
+    INLINE_TOOLNAME_DUMP_RE,
+  ]) {
     re.lastIndex = 0;
     const match = re.exec(text);
     if (!match) continue;
     const lead = text[match.index]!;
-    // Skip line-start / string-start dumps — stripToolDumps owns those.
     if (match.index === 0) continue;
     if (lead === "\n" || lead === "\r") continue;
     if (best < 0 || match.index < best) best = match.index;
@@ -155,7 +168,6 @@ function stripTrailingDumpFrom(dumpAndMaybeProse: string): string {
   const lines = dumpAndMaybeProse.split("\n");
   let i = 0;
 
-  // First line is the dump start (possibly mid-line after a separator) — always drop it.
   while (i < lines.length) {
     const cur = lines[i]!;
     const trimmed = cur.trim();
@@ -184,7 +196,8 @@ function stripTrailingDumpFrom(dumpAndMaybeProse: string): string {
       /^(command|file_path|query|path)\s*:/.test(trimmed) ||
       looksLikeDumpBody(trimmed) ||
       /^namespace:\s*/i.test(trimmed) ||
-      /^toolName:\s*/i.test(trimmed)
+      /^toolName:\s*/i.test(trimmed) ||
+      /^arguments:\s*/i.test(trimmed)
     ) {
       i++;
       continue;
@@ -206,7 +219,8 @@ function stripTrailingDumpFrom(dumpAndMaybeProse: string): string {
  *     python3 <<'PY'
  *     ...
  *
- * Also dumps that start with `namespace:` (no Tool: header).
+ * Also dumps that start with `namespace:` or bare `toolName:` / `arguments:`
+ * (no Tool: header).
  */
 function stripToolDumps(text: string): string {
   const lines = text.split("\n");
@@ -220,15 +234,24 @@ function stripToolDumps(text: string): string {
     const isNamespaceStart =
       /^namespace:\s*\S+/i.test(trimmed) &&
       looksLikeHarnessNamespace(trimmed);
+    const isBareToolNameStart = BARE_TOOLNAME_LINE_RE.test(trimmed);
+    const isBareArgumentsStart =
+      BARE_ARGUMENTS_LINE_RE.test(trimmed) &&
+      looksLikeBareArgumentsDump(lines, i);
 
-    if (!isHeader && !isNamespaceStart) {
+    if (
+      !isHeader &&
+      !isNamespaceStart &&
+      !isBareToolNameStart &&
+      !isBareArgumentsStart
+    ) {
       out.push(line);
       i++;
       continue;
     }
 
     i++;
-    let sawField = isNamespaceStart;
+    let sawField = isNamespaceStart || isBareToolNameStart || isBareArgumentsStart;
     while (i < lines.length) {
       const cur = lines[i]!;
       const t = cur.trim();
@@ -245,7 +268,9 @@ function stripToolDumps(text: string): string {
       if (
         TOOL_DUMP_FIELD_RE.test(t) ||
         TOOL_DUMP_HEADER_RE.test(t) ||
-        /^namespace:\s*/i.test(t)
+        /^namespace:\s*/i.test(t) ||
+        /^toolName:\s*/i.test(t) ||
+        /^arguments:\s*/i.test(t)
       ) {
         sawField = true;
         i++;
@@ -258,6 +283,13 @@ function stripToolDumps(text: string): string {
       }
 
       if (/^(command|file_path|query|path)\s*:/.test(t) && sawField) {
+        i++;
+        continue;
+      }
+
+      // Same-line dump body after `arguments: {"command":...}` already consumed
+      // via TOOL_DUMP_FIELD_RE; multi-line JSON / heredoc bodies look like dump.
+      if (sawField && looksLikeDumpBody(t)) {
         i++;
         continue;
       }
@@ -275,6 +307,30 @@ function looksLikeHarnessNamespace(line: string): boolean {
   return /namespace:\s*(custom-user-tools|cursor|mcp)\b/i.test(line);
 }
 
+/** Require nearby dump fields so bare `arguments:` prose is not stripped. */
+function looksLikeBareArgumentsDump(lines: string[], index: number): boolean {
+  const trimmed = lines[index]!.trim();
+  if (/^arguments:\s*[{\[]/.test(trimmed)) return true;
+  if (/^arguments:\s*(command|file_path|query|path)\s*:/.test(trimmed)) return true;
+
+  for (let j = index + 1; j < Math.min(lines.length, index + 6); j++) {
+    const t = lines[j]!.trim();
+    if (!t) continue;
+    if (
+      TOOL_DUMP_FIELD_RE.test(t) ||
+      BARE_TOOLNAME_LINE_RE.test(t) ||
+      /^namespace:\s*/i.test(t) ||
+      /^(command|file_path|query|path)\s*:/.test(t) ||
+      /^[ \t]/.test(lines[j]!) ||
+      looksLikeDumpBody(t)
+    ) {
+      return true;
+    }
+    break;
+  }
+  return false;
+}
+
 function peekNonEmpty(lines: string[], from: number): string | null {
   for (let i = from; i < lines.length; i++) {
     const t = lines[i]!.trim();
@@ -289,6 +345,8 @@ function isDumpContinuation(line: string): boolean {
     TOOL_DUMP_FIELD_RE.test(trimmed) ||
     TOOL_DUMP_HEADER_RE.test(trimmed) ||
     /^namespace:\s*/i.test(trimmed) ||
+    /^toolName:\s*/i.test(trimmed) ||
+    /^arguments:\s*/i.test(trimmed) ||
     /^[ \t]/.test(line) ||
     /^(command|file_path|query|path)\s*:/.test(trimmed)
   );
@@ -298,6 +356,7 @@ function looksLikeDumpBody(trimmed: string): boolean {
   return (
     /^(python3|bash|node|curl|rg|ls|cd)\b/.test(trimmed) ||
     trimmed.startsWith("import ") ||
+    trimmed.startsWith("{") ||
     trimmed.includes("<<'") ||
     trimmed.includes('<<"')
   );
@@ -389,7 +448,14 @@ function earliestHoldIndex(text: string): number {
 }
 
 function findIncompleteOpenSuffix(text: string): number {
-  const prefixes = [TOOL_CALL_OPEN, XML_TOOL_CALL_OPEN, "Tool:", "namespace:"];
+  const prefixes = [
+    TOOL_CALL_OPEN,
+    XML_TOOL_CALL_OPEN,
+    "Tool:",
+    "namespace:",
+    "toolName:",
+    "arguments:",
+  ];
   for (const full of prefixes) {
     for (let len = 1; len < full.length; len++) {
       const partial = full.slice(0, len);
@@ -452,21 +518,31 @@ function findPossibleToolDumpSuffix(text: string): number {
     const trimmed = lines[i]!.trim();
     if (!trimmed) continue;
 
-    if (TOOL_DUMP_HEADER_RE.test(trimmed) || looksLikeHarnessNamespace(trimmed)) {
+    if (
+      TOOL_DUMP_HEADER_RE.test(trimmed) ||
+      looksLikeHarnessNamespace(trimmed) ||
+      BARE_TOOLNAME_LINE_RE.test(trimmed) ||
+      (BARE_ARGUMENTS_LINE_RE.test(trimmed) && looksLikeBareArgumentsDump(lines, i))
+    ) {
       return lineStartOffset(lines, i);
     }
 
     if (TOOL_DUMP_FIELD_RE.test(trimmed) || /^[ \t]/.test(lines[i]!)) {
       for (let j = i; j >= 0; j--) {
         const t = lines[j]!.trim();
-        if (TOOL_DUMP_HEADER_RE.test(t) || looksLikeHarnessNamespace(t)) {
+        if (
+          TOOL_DUMP_HEADER_RE.test(t) ||
+          looksLikeHarnessNamespace(t) ||
+          BARE_TOOLNAME_LINE_RE.test(t)
+        ) {
           return lineStartOffset(lines, j);
         }
       }
       for (let j = 0; j <= i; j++) {
         if (
           TOOL_DUMP_FIELD_RE.test(lines[j]!.trim()) ||
-          looksLikeHarnessNamespace(lines[j]!.trim())
+          looksLikeHarnessNamespace(lines[j]!.trim()) ||
+          BARE_TOOLNAME_LINE_RE.test(lines[j]!.trim())
         ) {
           return lineStartOffset(lines, j);
         }
@@ -477,7 +553,11 @@ function findPossibleToolDumpSuffix(text: string): number {
       return lineStartOffset(lines, i);
     }
 
-    if (INLINE_NAMESPACE_DUMP_RE.test(trimmed) || INLINE_TOOL_HEADER_RE.test(trimmed)) {
+    if (
+      INLINE_NAMESPACE_DUMP_RE.test(trimmed) ||
+      INLINE_TOOL_HEADER_RE.test(trimmed) ||
+      INLINE_TOOLNAME_DUMP_RE.test(trimmed)
+    ) {
       return lineStartOffset(lines, i);
     }
 
@@ -517,7 +597,13 @@ function looksLikeIncompleteOrphan(line: string): boolean {
   if (isOrphanFragmentLine(trimmed)) return true;
   if (/^Tool:\s*/.test(trimmed)) return true;
   if (/^namespace:\s*/i.test(trimmed)) return true;
-  if (INLINE_NAMESPACE_DUMP_RE.test(trimmed) || INLINE_TOOL_HEADER_RE.test(trimmed)) {
+  if (/^toolName:\s*/i.test(trimmed)) return true;
+  if (/^arguments:\s*/i.test(trimmed)) return true;
+  if (
+    INLINE_NAMESPACE_DUMP_RE.test(trimmed) ||
+    INLINE_TOOL_HEADER_RE.test(trimmed) ||
+    INLINE_TOOLNAME_DUMP_RE.test(trimmed)
+  ) {
     return true;
   }
   return (
