@@ -30,6 +30,9 @@ const BARE_ARGUMENTS_LINE_RE = /^arguments:\s*/i;
  * `...icons.namespace: custom-user-tools toolName: Read ...`
  * or `...docs. Tool: CallDynamicTool namespace: ...`
  * or `...paths.toolName: Bash arguments: {...}`
+ *
+ * Mid-sentence mentions like `Set the toolName: weather for …` are not dumps;
+ * confirmation happens in isConfirmedInlineDump.
  */
 const INLINE_NAMESPACE_DUMP_RE =
   /(?:^|[.\s])namespace:\s*(?:custom-user-tools|cursor|mcp)\b/i;
@@ -40,6 +43,9 @@ const INLINE_TOOL_HEADER_RE = new RegExp(
 
 const INLINE_TOOLNAME_DUMP_RE =
   /(?:^|[.\s])toolName:\s*[A-Za-z][A-Za-z0-9_-]*\b/i;
+
+const INLINE_DUMP_FIELD_AHEAD_RE =
+  /^\s+(?:toolName|tool_name|arguments|args|namespace)\s*:/i;
 
 export interface ToolMarkupStreamFilter {
   push(chunk: string): string;
@@ -136,8 +142,18 @@ function stripInlineToolDumps(text: string): string {
     if (cutAt < 0) break;
 
     const lead = result[cutAt]!;
-    const dumpStart = lead === "." || lead === " " || lead === "\t" ? cutAt + 1 : cutAt;
-    const cleanBefore = result.slice(0, cutAt);
+    let dumpStart = cutAt;
+    let cleanEnd = cutAt;
+    if (lead === " " || lead === "\t") {
+      // Drop the separator space before the dump.
+      dumpStart = cutAt + 1;
+      cleanEnd = cutAt;
+    } else if (lead === ".") {
+      // Keep sentence/word-ending period; dump starts after it.
+      dumpStart = cutAt + 1;
+      cleanEnd = cutAt + 1;
+    }
+    const cleanBefore = result.slice(0, cleanEnd);
 
     result = cleanBefore + stripTrailingDumpFrom(result.slice(dumpStart));
   }
@@ -152,15 +168,75 @@ function earliestInlineDumpIndex(text: string): number {
     INLINE_TOOL_HEADER_RE,
     INLINE_TOOLNAME_DUMP_RE,
   ]) {
-    re.lastIndex = 0;
-    const match = re.exec(text);
-    if (!match) continue;
-    const lead = text[match.index]!;
-    if (match.index === 0) continue;
-    if (lead === "\n" || lead === "\r") continue;
-    if (best < 0 || match.index < best) best = match.index;
+    let from = 0;
+    while (from < text.length) {
+      const slice = text.slice(from);
+      const match = re.exec(slice);
+      if (!match) break;
+      const index = from + match.index;
+      const lead = text[index]!;
+      // Advance past this candidate even when rejected (regexes are non-global).
+      from = index + Math.max(match[0].length, 1);
+      if (index === 0) continue;
+      if (lead === "\n" || lead === "\r") continue;
+      // Rebuild a match-shaped object with absolute index for confirmation.
+      const absMatch = Object.assign([], match, {
+        index,
+        input: text,
+        0: match[0],
+      }) as RegExpExecArray;
+      if (!isConfirmedInlineDump(text, absMatch)) continue;
+      if (best < 0 || index < best) best = index;
+      break;
+    }
   }
   return best;
+}
+
+/**
+ * True dumps have another dump field ahead, a newline-prefixed dump, or a
+ * glued lead (no space before the marker). Mid-sentence prose like
+ * `Set the toolName: weather for …` keeps the remainder.
+ */
+function isConfirmedInlineDump(
+  text: string,
+  match: RegExpExecArray,
+): boolean {
+  const lead = text[match.index]!;
+  const glued = lead === "." || (lead !== " " && lead !== "\t");
+  const after = text.slice(match.index + match[0].length);
+  const firstLine = after.split("\n", 1)[0] ?? "";
+  const restLines = after.slice(firstLine.length);
+
+  if (INLINE_DUMP_FIELD_AHEAD_RE.test(firstLine)) return true;
+  if (/^\s+[{\[]/.test(firstLine)) return true;
+
+  // Tool: CallDynamicTool alone is already a dump header when mid-line.
+  if (/^(?:\.|[ \t])?Tool:\s*/.test(match[0])) return true;
+
+  // Namespace harness value is dump-like when glued or followed by fields/newline dump.
+  if (/namespace:\s*(?:custom-user-tools|cursor|mcp)\b/i.test(match[0])) {
+    if (glued) return true;
+    if (INLINE_DUMP_FIELD_AHEAD_RE.test(firstLine)) return true;
+    if (/^\n(?:namespace|toolName|tool_name|arguments|args)\s*:/i.test(restLines)) {
+      return true;
+    }
+    // Spaced mid-sentence: `Configure the namespace: custom-user-tools for …`
+    return false;
+  }
+
+  // toolName: … — require dump fields / JSON / glued lead.
+  if (/toolName:\s*/i.test(match[0])) {
+    if (INLINE_DUMP_FIELD_AHEAD_RE.test(firstLine)) return true;
+    if (/^\s+[{\[]/.test(firstLine)) return true;
+    if (/^\n(?:namespace|toolName|tool_name|arguments|args)\s*:/i.test(restLines)) {
+      return true;
+    }
+    if (glued) return true;
+    return false;
+  }
+
+  return glued;
 }
 
 /** Given text starting at a dump marker, return only non-dump trailing prose if any. */
@@ -173,6 +249,42 @@ function stripTrailingDumpFrom(dumpAndMaybeProse: string): string {
     const trimmed = cur.trim();
 
     if (i === 0) {
+      const sameLineTail = trailingProseAfterInlineDump(cur);
+      if (sameLineTail !== null) {
+        const later = lines.slice(1);
+        // Still consume dump continuation lines after the first line.
+        let j = 0;
+        while (j < later.length) {
+          const t = later[j]!.trim();
+          if (
+            !t ||
+            TOOL_DUMP_FIELD_RE.test(t) ||
+            TOOL_DUMP_HEADER_RE.test(t) ||
+            /^[ \t]/.test(later[j]!) ||
+            /^(command|file_path|query|path)\s*:/.test(t) ||
+            looksLikeDumpBody(t) ||
+            /^namespace:\s*/i.test(t) ||
+            /^toolName:\s*/i.test(t) ||
+            /^arguments:\s*/i.test(t)
+          ) {
+            if (!t) {
+              const next = peekNonEmpty(later, j + 1);
+              if (
+                next !== null &&
+                (isDumpContinuation(next) || looksLikeDumpBody(next.trim()))
+              ) {
+                j++;
+                continue;
+              }
+              return sameLineTail + "\n" + later.slice(j + 1).join("\n");
+            }
+            j++;
+            continue;
+          }
+          return sameLineTail + "\n" + later.slice(j).join("\n");
+        }
+        return sameLineTail;
+      }
       i++;
       continue;
     }
@@ -207,6 +319,81 @@ function stripTrailingDumpFrom(dumpAndMaybeProse: string): string {
   }
 
   return "";
+}
+
+/**
+ * If the first dump line embeds JSON/braced args then more prose on the same
+ * line, return that prose (with a leading space when needed). Otherwise null
+ * so the whole first line is treated as dump.
+ */
+function trailingProseAfterInlineDump(firstLine: string): string | null {
+  // Prefer balanced JSON after `arguments:` / `args:`.
+  const argsIdx = firstLine.search(/\b(?:arguments|args)\s*:\s*[{\[]/i);
+  if (argsIdx >= 0) {
+    const braceAt = firstLine.indexOf("{", argsIdx);
+    const bracketAt = firstLine.indexOf("[", argsIdx);
+    let openAt = -1;
+    let openCh = "{";
+    let closeCh = "}";
+    if (braceAt >= 0 && (bracketAt < 0 || braceAt < bracketAt)) {
+      openAt = braceAt;
+    } else if (bracketAt >= 0) {
+      openAt = bracketAt;
+      openCh = "[";
+      closeCh = "]";
+    }
+    if (openAt >= 0) {
+      const end = findBalancedJsonEnd(firstLine, openAt, openCh, closeCh);
+      if (end >= 0) {
+        const tail = firstLine.slice(end + 1);
+        if (/\S/.test(tail)) {
+          return /^\s/.test(tail) ? tail : " " + tail;
+        }
+        return "";
+      }
+    }
+  }
+
+  return null;
+}
+
+function findBalancedJsonEnd(
+  text: string,
+  start: number,
+  openCh: string,
+  closeCh: string,
+): number {
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let escape = false;
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]!;
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\" && (inSingle || inDouble)) {
+      escape = true;
+      continue;
+    }
+    if (!inSingle && ch === '"') {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (!inDouble && ch === "'") {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (inSingle || inDouble) continue;
+    if (ch === openCh) depth++;
+    else if (ch === closeCh) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -553,12 +740,14 @@ function findPossibleToolDumpSuffix(text: string): number {
       return lineStartOffset(lines, i);
     }
 
-    if (
-      INLINE_NAMESPACE_DUMP_RE.test(trimmed) ||
-      INLINE_TOOL_HEADER_RE.test(trimmed) ||
-      INLINE_TOOLNAME_DUMP_RE.test(trimmed)
-    ) {
-      return lineStartOffset(lines, i);
+    // Only hold the line when an inline match is a confirmed dump, not mid-sentence prose.
+    const lineOffset = lineStartOffset(lines, i);
+    const confirmedInline = earliestInlineDumpIndex(
+      // Probe the line in isolation with a leading space so mid-line regexes can fire.
+      " " + trimmed,
+    );
+    if (confirmedInline >= 0) {
+      return lineOffset;
     }
 
     break;
@@ -599,13 +788,8 @@ function looksLikeIncompleteOrphan(line: string): boolean {
   if (/^namespace:\s*/i.test(trimmed)) return true;
   if (/^toolName:\s*/i.test(trimmed)) return true;
   if (/^arguments:\s*/i.test(trimmed)) return true;
-  if (
-    INLINE_NAMESPACE_DUMP_RE.test(trimmed) ||
-    INLINE_TOOL_HEADER_RE.test(trimmed) ||
-    INLINE_TOOLNAME_DUMP_RE.test(trimmed)
-  ) {
-    return true;
-  }
+  // Mid-sentence toolName:/namespace: prose must not be dropped on flush.
+  if (earliestInlineDumpIndex(" " + trimmed) >= 0) return true;
   return (
     /^(?:[A-Za-z0-9_-]+\s+)?name=(?:Call|Get)/.test(trimmed) ||
     (/^[A-Za-z0-9_-]*_[A-Za-z0-9_-]+$/.test(trimmed) && /\d/.test(trimmed))
