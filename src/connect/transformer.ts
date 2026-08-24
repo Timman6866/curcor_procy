@@ -63,7 +63,9 @@ function sdkMessageEnvelope(event: { type: string }) {
 }
 
 function sanitizeTextDeltaUpdate(update: Record<string, unknown>, filter: ReturnType<typeof createToolMarkupStreamFilter>) {
-  if (update.type !== "text-delta") return { update, skip: false as const };
+  if (update.type !== "text-delta" && update.type !== "thinking-delta") {
+    return { update, skip: false as const };
+  }
   const text = typeof update.text === "string" ? update.text : "";
   if (!text) return { update, skip: true as const };
   const safe = filter.push(text);
@@ -95,6 +97,25 @@ function sanitizeAssistantEvent(event: Record<string, unknown>): Record<string, 
     return { ...event, message: { ...message, content: nextContent } };
   }
   return { ...event, content: nextContent };
+}
+
+function sanitizeThinkingEvent(event: Record<string, unknown>): Record<string, unknown> {
+  const message = asRecord(event.message) ?? event;
+  if (typeof message.text === "string") {
+    const safe = stripToolMarkup(message.text);
+    if (event.message) {
+      return { ...event, message: { ...message, text: safe } };
+    }
+    return { ...event, text: safe };
+  }
+  if (typeof message.content === "string") {
+    const safe = stripToolMarkup(message.content);
+    if (event.message) {
+      return { ...event, message: { ...message, content: safe } };
+    }
+    return { ...event, content: safe };
+  }
+  return event;
 }
 
 export class ConnectTransformer {
@@ -227,13 +248,15 @@ export class ConnectTransformer {
     const streamDeltas = sendOptions?.enableDeltas !== false;
     const streamSteps = sendOptions?.enableSteps === true;
     const textFilter = createToolMarkupStreamFilter();
+    const thinkingFilter = createToolMarkupStreamFilter();
 
     const run = await session.agent.send(text, {
       onDelta: streamDeltas
         ? async ({ update }) => {
             const record = asRecord(update) ?? { type: (update as { type?: string }).type };
-            if (record.type === "text-delta") {
-              const sanitized = sanitizeTextDeltaUpdate(record, textFilter);
+            if (record.type === "text-delta" || record.type === "thinking-delta") {
+              const filter = record.type === "thinking-delta" ? thinkingFilter : textFilter;
+              const sanitized = sanitizeTextDeltaUpdate(record, filter);
               if (sanitized.skip) return;
               write(
                 encodeJsonLine({
@@ -278,10 +301,12 @@ export class ConnectTransformer {
         event.type === "status" ||
         event.type === "usage"
       ) {
-        const payload =
-          event.type === "assistant"
-            ? sanitizeAssistantEvent(event as unknown as Record<string, unknown>)
-            : event;
+        let payload: Record<string, unknown> | { type: string } = event;
+        if (event.type === "assistant") {
+          payload = sanitizeAssistantEvent(event as unknown as Record<string, unknown>);
+        } else if (event.type === "thinking") {
+          payload = sanitizeThinkingEvent(event as unknown as Record<string, unknown>);
+        }
         write(encodeJsonLine(sdkMessageEnvelope(payload as { type: string })));
       }
     }
@@ -293,6 +318,18 @@ export class ConnectTransformer {
           interactionUpdate: {
             type: "text-delta",
             update: { type: "text-delta", text: flushed },
+          },
+        }),
+      );
+    }
+
+    const flushedThinking = thinkingFilter.flush();
+    if (flushedThinking && streamDeltas) {
+      write(
+        encodeJsonLine({
+          interactionUpdate: {
+            type: "thinking-delta",
+            update: { type: "thinking-delta", text: flushedThinking },
           },
         }),
       );
