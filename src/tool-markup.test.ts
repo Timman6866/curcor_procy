@@ -271,6 +271,43 @@ test("leaves ordinary arguments: prose alone", () => {
   assert.equal(stripToolMarkup(input), input);
 });
 
+test("leaves mid-sentence toolName: prose without truncating the rest", () => {
+  const input = "Set the toolName: weather for the API and continue.";
+  assert.equal(stripToolMarkup(input), input);
+});
+
+test("leaves mid-sentence harness namespace: prose without truncating the rest", () => {
+  const input =
+    "Configure the namespace: custom-user-tools for the project.";
+  assert.equal(stripToolMarkup(input), input);
+});
+
+test("strips confirmed mid-sentence toolName dump but keeps trailing prose", () => {
+  const input =
+    'Set the toolName: Bash arguments: {"command":"ls"} then continue.';
+  const result = stripToolMarkup(input);
+  assert.match(result, /Set the/);
+  assert.match(result, /then continue/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /arguments:/);
+});
+
+test("keeps glue period and recovers prose after same-line JSON dump", () => {
+  const input =
+    'Done.toolName: Bash arguments: {"x":1} And more prose here.';
+  const result = stripToolMarkup(input);
+  assert.equal(result, "Done. And more prose here.");
+});
+
+test("stream filter leaves mid-sentence toolName prose on flush", () => {
+  const filter = createToolMarkupStreamFilter();
+  const parts = [
+    filter.push("Set the toolName: weather for the API."),
+    filter.flush(),
+  ];
+  assert.equal(parts.join(""), "Set the toolName: weather for the API.");
+});
+
 test("stream filter hides bare toolName dumps split across chunks", () => {
   const filter = createToolMarkupStreamFilter();
   const parts = [
