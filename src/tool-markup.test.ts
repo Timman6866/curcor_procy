@@ -172,3 +172,66 @@ test("leaves prose that mentions Tool: without dump fields alone", () => {
   // "Tool: section" does not match TOOL_DUMP_HEADER_RE (requires tool-like name after Tool:)
   assert.equal(stripToolMarkup(input), input);
 });
+
+test("strips namespace: dumps without a Tool: header", () => {
+  const input = [
+    "Checking icons.",
+    "namespace: custom-user-tools",
+    "toolName: Read",
+    "arguments:",
+    "  file_path: /tmp/skin.css",
+    "Icons look good.",
+  ].join("\n");
+
+  const result = stripToolMarkup(input);
+  assert.match(result, /Checking icons/);
+  assert.match(result, /Icons look good/);
+  assert.doesNotMatch(result, /namespace:/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /file_path/);
+});
+
+test("strips inline namespace dump glued to prose", () => {
+  const input =
+    "Updated the icons.namespace: custom-user-tools toolName: Read arguments: file_path: /tmp/a.css";
+
+  const result = stripToolMarkup(input);
+  assert.match(result, /Updated the icons/);
+  assert.doesNotMatch(result, /namespace:/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /file_path/);
+});
+
+test("strips inline Tool: CallDynamicTool dump glued after a period", () => {
+  const input = [
+    "See the docs. Tool: CallDynamicTool",
+    "namespace: custom-user-tools",
+    "toolName: Bash",
+    "arguments: command: ls",
+    "Ready to ship.",
+  ].join("\n");
+
+  const result = stripToolMarkup(input);
+  assert.match(result, /See the docs/);
+  assert.match(result, /Ready to ship/);
+  assert.doesNotMatch(result, /CallDynamicTool/);
+  assert.doesNotMatch(result, /namespace:/);
+});
+
+test("stream filter hides inline namespace dumps split across chunks", () => {
+  const filter = createToolMarkupStreamFilter();
+  const parts = [
+    filter.push("Updated the icons."),
+    filter.push("namespace: custom-user-tools\n"),
+    filter.push("toolName: Read\n"),
+    filter.push("arguments: file_path: /tmp/a.css\n"),
+    filter.push("All clear."),
+    filter.flush(),
+  ];
+
+  const result = parts.join("");
+  assert.match(result, /Updated the icons/);
+  assert.match(result, /All clear/);
+  assert.doesNotMatch(result, /namespace:/);
+  assert.doesNotMatch(result, /toolName:/);
+});
