@@ -73,6 +73,7 @@ async function runAgentTurn(
   const pending = { calls: null as OpenAiToolCall[] | null };
   const reasoningParts: string[] = [];
   const textFilter = createToolMarkupStreamFilter();
+  const reasoningFilter = createToolMarkupStreamFilter();
 
   const requestOptions = agentRequestOptions(request);
   const options =
@@ -94,8 +95,11 @@ async function runAgentTurn(
             typeof update.text === "string" &&
             update.text
           ) {
-            reasoningParts.push(update.text);
-            await handlers?.onReasoning?.(update.text);
+            const safe = reasoningFilter.push(update.text);
+            if (safe) {
+              reasoningParts.push(safe);
+              await handlers?.onReasoning?.(safe);
+            }
           }
         }
       : undefined,
@@ -114,8 +118,11 @@ async function runAgentTurn(
         typeof event.text === "string" &&
         event.text
       ) {
-        reasoningParts.push(event.text);
-        await handlers?.onReasoning?.(event.text);
+        const safe = stripToolMarkup(event.text);
+        if (safe) {
+          reasoningParts.push(safe);
+          await handlers?.onReasoning?.(safe);
+        }
       }
 
       if (pending.calls) {
@@ -126,7 +133,13 @@ async function runAgentTurn(
     }
 
     const result = await run.wait();
-    const reasoningContent = reasoningParts.length > 0 ? reasoningParts.join("") : null;
+    const flushedReasoning = reasoningFilter.flush();
+    if (flushedReasoning) {
+      reasoningParts.push(flushedReasoning);
+      await handlers?.onReasoning?.(flushedReasoning);
+    }
+    const reasoningContent =
+      reasoningParts.length > 0 ? stripToolMarkup(reasoningParts.join("")) : null;
     const flushed = textFilter.flush();
     if (flushed) await handlers?.onText?.(flushed);
 
