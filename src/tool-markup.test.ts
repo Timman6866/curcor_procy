@@ -108,3 +108,67 @@ test("stream filter holds and drops incomplete orphan fragments", () => {
   assert.match(result, /Outro/);
   assert.doesNotMatch(result, /CallDynamicTool/);
 });
+
+test("strips Tool: CallDynamicTool namespace/toolName/arguments dumps", () => {
+  const input = [
+    "Build succeeded.",
+    "Tool: CallDynamicTool",
+    "namespace: custom-user-tools",
+    "toolName: Bash",
+    "arguments: command: |",
+    "  python3 <<'PY'",
+    "  import urllib.request",
+    "  print('health check')",
+    "  PY",
+    "Verifying the skin is live.",
+  ].join("\n");
+
+  const result = stripToolMarkup(input);
+  assert.match(result, /Build succeeded/);
+  assert.match(result, /Verifying the skin is live/);
+  assert.doesNotMatch(result, /CallDynamicTool/);
+  assert.doesNotMatch(result, /namespace:/);
+  assert.doesNotMatch(result, /toolName:/);
+  assert.doesNotMatch(result, /python3/);
+});
+
+test("strips multiple Tool: dumps with GetDynamicTools", () => {
+  const input = [
+    "Checking tools.",
+    "Tool: GetDynamicTools",
+    "namespace: custom-user-tools",
+    "toolName: Edit",
+    "arguments:",
+    "  file_path: /tmp/a.ts",
+    "Next step.",
+  ].join("\n");
+
+  const result = stripToolMarkup(input);
+  assert.equal(result.trim(), "Checking tools.\nNext step.");
+});
+
+test("stream filter hides Tool: dumps split across chunks", () => {
+  const filter = createToolMarkupStreamFilter();
+  const parts = [
+    filter.push("Status update.\n"),
+    filter.push("Tool: Call"),
+    filter.push("DynamicTool\n"),
+    filter.push("namespace: custom-user-tools\n"),
+    filter.push("toolName: Bash\n"),
+    filter.push("arguments: command: ls\n"),
+    filter.push("All clear."),
+    filter.flush(),
+  ];
+
+  const result = parts.join("");
+  assert.match(result, /Status update/);
+  assert.match(result, /All clear/);
+  assert.doesNotMatch(result, /CallDynamicTool/);
+  assert.doesNotMatch(result, /namespace:/);
+});
+
+test("leaves prose that mentions Tool: without dump fields alone", () => {
+  const input = "The Tool: section in the docs covers setup.\nSee namespace docs next.";
+  // "Tool: section" does not match TOOL_DUMP_HEADER_RE (requires tool-like name after Tool:)
+  assert.equal(stripToolMarkup(input), input);
+});
