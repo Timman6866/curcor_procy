@@ -10,6 +10,7 @@ import {
   JSON_CONTENT_TYPE,
 } from "./framing.ts";
 import { AgentSessionStore } from "./session-store.ts";
+import { createToolMarkupStreamFilter, stripToolMarkup } from "../tool-markup.ts";
 
 const PROTOCOL_VERSION = "sdk.v1";
 const BRIDGE_VERSION = "0.1.0-cursor-openai-proxy";
@@ -59,6 +60,41 @@ function sdkMessageEnvelope(event: { type: string }) {
       message: event,
     },
   };
+}
+
+function sanitizeTextDeltaUpdate(update: Record<string, unknown>, filter: ReturnType<typeof createToolMarkupStreamFilter>) {
+  if (update.type !== "text-delta") return { update, skip: false as const };
+  const text = typeof update.text === "string" ? update.text : "";
+  if (!text) return { update, skip: true as const };
+  const safe = filter.push(text);
+  if (!safe) return { update, skip: true as const };
+  return { update: { ...update, text: safe }, skip: false as const };
+}
+
+function sanitizeAssistantEvent(event: Record<string, unknown>): Record<string, unknown> {
+  const message = asRecord(event.message) ?? event;
+  const content = message.content;
+  if (typeof content === "string") {
+    return { ...event, ...(event.message ? { message: { ...message, content: stripToolMarkup(content) } } : { content: stripToolMarkup(content) }) };
+  }
+  if (!Array.isArray(content)) return event;
+
+  const nextContent = content.map((block) => {
+    const item = asRecord(block);
+    if (!item) return block;
+    if (item.type === "text" && typeof item.text === "string") {
+      return { ...item, text: stripToolMarkup(item.text) };
+    }
+    if (typeof item.text === "string" && item.type !== "tool_use") {
+      return { ...item, text: stripToolMarkup(item.text) };
+    }
+    return block;
+  });
+
+  if (event.message) {
+    return { ...event, message: { ...message, content: nextContent } };
+  }
+  return { ...event, content: nextContent };
 }
 
 export class ConnectTransformer {
@@ -190,10 +226,25 @@ export class ConnectTransformer {
     const sendOptions = asRecord(body?.options);
     const streamDeltas = sendOptions?.enableDeltas !== false;
     const streamSteps = sendOptions?.enableSteps === true;
+    const textFilter = createToolMarkupStreamFilter();
 
     const run = await session.agent.send(text, {
       onDelta: streamDeltas
         ? async ({ update }) => {
+            const record = asRecord(update) ?? { type: (update as { type?: string }).type };
+            if (record.type === "text-delta") {
+              const sanitized = sanitizeTextDeltaUpdate(record, textFilter);
+              if (sanitized.skip) return;
+              write(
+                encodeJsonLine({
+                  interactionUpdate: {
+                    type: sanitized.update.type,
+                    update: sanitized.update,
+                  },
+                }),
+              );
+              return;
+            }
             write(
               encodeJsonLine({
                 interactionUpdate: {
@@ -227,8 +278,24 @@ export class ConnectTransformer {
         event.type === "status" ||
         event.type === "usage"
       ) {
-        write(encodeJsonLine(sdkMessageEnvelope(event)));
+        const payload =
+          event.type === "assistant"
+            ? sanitizeAssistantEvent(event as unknown as Record<string, unknown>)
+            : event;
+        write(encodeJsonLine(sdkMessageEnvelope(payload as { type: string })));
       }
+    }
+
+    const flushed = textFilter.flush();
+    if (flushed && streamDeltas) {
+      write(
+        encodeJsonLine({
+          interactionUpdate: {
+            type: "text-delta",
+            update: { type: "text-delta", text: flushed },
+          },
+        }),
+      );
     }
 
     const result = await run.wait();
@@ -259,7 +326,7 @@ export class ConnectTransformer {
             runId: run.id,
             agentId: run.agentId,
             status: mapRunStatus(result.status),
-            result: result.result ?? "",
+            result: stripToolMarkup(result.result ?? ""),
             model: result.model ?? { id: session.model },
             durationMs: result.durationMs ?? 0,
             usage: mapUsage(result.usage),
