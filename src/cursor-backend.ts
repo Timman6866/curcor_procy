@@ -11,6 +11,7 @@ import type { NormalizedImage, NormalizedRequest } from "./normalize.ts";
 import { collectImages, resolveModel, toPrompt } from "./normalize.ts";
 import { emptyUsage, type TokenCounts } from "./openai-format.ts";
 import { expandModelCatalog } from "./model-variants.ts";
+import { createToolMarkupStreamFilter, stripToolMarkup } from "./tool-markup.ts";
 
 export type FinishReason = "stop" | "tool_calls";
 
@@ -71,6 +72,7 @@ async function runAgentTurn(
   const images = collectImages(request.messages);
   const pending = { calls: null as OpenAiToolCall[] | null };
   const reasoningParts: string[] = [];
+  const textFilter = createToolMarkupStreamFilter();
 
   const requestOptions = agentRequestOptions(request);
   const options =
@@ -83,7 +85,8 @@ async function runAgentTurn(
     onDelta: handlers || request.reasoning.enabled
       ? async ({ update }) => {
           if (update.type === "text-delta" && typeof update.text === "string" && update.text) {
-            await handlers?.onText?.(update.text);
+            const safe = textFilter.push(update.text);
+            if (safe) await handlers?.onText?.(safe);
           }
           if (
             request.reasoning.enabled &&
@@ -124,6 +127,8 @@ async function runAgentTurn(
 
     const result = await run.wait();
     const reasoningContent = reasoningParts.length > 0 ? reasoningParts.join("") : null;
+    const flushed = textFilter.flush();
+    if (flushed) await handlers?.onText?.(flushed);
 
     if (pending.calls) {
       return {
@@ -159,7 +164,7 @@ async function runAgentTurn(
 
     return {
       model: result.model?.id ?? model,
-      content: result.result ?? "",
+      content: stripToolMarkup(result.result ?? ""),
       reasoningContent,
       finishReason: "stop",
       usage: usageFrom(result.usage),
@@ -197,7 +202,7 @@ export async function complete(
       }
       return {
         model: result.model?.id ?? responseModel,
-        content: result.result ?? "",
+        content: stripToolMarkup(result.result ?? ""),
         finishReason: "stop",
         usage: usageFrom(result.usage),
       };

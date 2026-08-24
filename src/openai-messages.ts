@@ -8,14 +8,14 @@ export function toFunctionCallingPrompt(messages: NormalizedMessage[]): string {
       }
 
       if (message.role === "assistant" && message.toolCalls.length > 0) {
-        const callLines = message.toolCalls
-          .map(
-            (call) =>
-              `[tool_call id=${call.id} name=${call.function.name} args=${call.function.arguments}]`,
-          )
+        const callBlocks = message.toolCalls
+          .map((call) => {
+            const args = call.function.arguments?.trim() || "{}";
+            return `TOOL_CALL id=${call.id} name=${call.function.name}\nARGS:\n${args}`;
+          })
           .join("\n");
         const text = message.content.trim();
-        return `ASSISTANT:\n${[text, callLines].filter(Boolean).join("\n")}`.trim();
+        return `ASSISTANT:\n${[text, callBlocks].filter(Boolean).join("\n")}`.trim();
       }
 
       const label = message.role === "developer" ? "system" : message.role;
