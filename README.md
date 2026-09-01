@@ -1,5 +1,7 @@
 # cursor-openai-proxy
 
+![Admin dashboard — health, config, models, and smoke tests](docs/admin-dashboard.png)
+
 OpenAI-compatible REST server that forwards chat traffic to Cursor models through the official SDK. Point any OpenAI client at it — `openai`, Continue, Cline, LangChain, Hermes, curl.
 
 It also exposes Cursor's official **`sdk.v1` Connect/protobuf** surface (the same wire contract as [`cursor-sdk-bridge`](https://github.com/cursor/sdk-bridge)), so non-TypeScript clients can speak native Cursor agent RPCs without embedding the SDK.
