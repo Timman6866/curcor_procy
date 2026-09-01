@@ -1,6 +1,7 @@
 import type { ToolName } from "@cursor/sdk";
 
-export type ToolsPolicy = "full" | "none" | ToolName[];
+/** Local = full Cursor tool suite; cloud = text-only (empty tools) on local runtime. */
+export type ToolsPolicy = "local" | "cloud" | ToolName[];
 
 export const AVAILABLE_TOOLS: ToolName[] = [
   "shell",
@@ -24,10 +25,26 @@ export const AVAILABLE_TOOLS: ToolName[] = [
   "applyAgentDiff",
 ];
 
-export function parseToolsPolicy(raw: string | undefined, fallback: ToolsPolicy = "full"): ToolsPolicy {
+export function parseToolsPolicy(raw: string | undefined, fallback: ToolsPolicy = "local"): ToolsPolicy {
   const value = raw?.trim().toLowerCase();
-  if (!value || value === "full" || value === "all" || value === "*") return "full";
-  if (value === "none" || value === "off" || value === "false" || value === "0") return "none";
+  if (
+    !value ||
+    value === "local" ||
+    value === "full" ||
+    value === "all" ||
+    value === "*"
+  ) {
+    return "local";
+  }
+  if (
+    value === "cloud" ||
+    value === "none" ||
+    value === "off" ||
+    value === "false" ||
+    value === "0"
+  ) {
+    return "cloud";
+  }
   const names = raw!
     .split(",")
     .map((part) => part.trim())
@@ -36,7 +53,8 @@ export function parseToolsPolicy(raw: string | undefined, fallback: ToolsPolicy 
 }
 
 export function parseToolsPolicyValue(value: unknown, fallback: ToolsPolicy): ToolsPolicy {
-  if (value === "full" || value === "none") return value;
+  if (value === "local" || value === "full") return "local";
+  if (value === "cloud" || value === "none") return "cloud";
   if (Array.isArray(value)) {
     const names = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
     return names.length > 0 ? (names as ToolName[]) : fallback;
@@ -45,22 +63,28 @@ export function parseToolsPolicyValue(value: unknown, fallback: ToolsPolicy): To
 }
 
 export function toolsPolicyToView(policy: ToolsPolicy): {
-  mode: "full" | "none" | "custom";
+  mode: "local" | "cloud" | "custom";
   tools: string[];
 } {
-  if (policy === "full") return { mode: "full", tools: [] };
-  if (policy === "none") return { mode: "none", tools: [] };
+  if (policy === "local") return { mode: "local", tools: [] };
+  if (policy === "cloud") return { mode: "cloud", tools: [] };
   return { mode: "custom", tools: [...policy] };
 }
 
 export function viewToToolsPolicy(
-  mode: "full" | "none" | "custom",
+  mode: "local" | "cloud" | "custom",
   tools: string[],
 ): ToolsPolicy {
-  if (mode === "full") return "full";
-  if (mode === "none") return "none";
+  if (mode === "local") return "local";
+  if (mode === "cloud") return "cloud";
   const names = tools
     .map((tool) => tool.trim())
     .filter(Boolean) as ToolName[];
-  return names.length > 0 ? names : "none";
+  return names.length > 0 ? names : "cloud";
+}
+
+export function formatToolsPolicyLabel(policy: ToolsPolicy): string {
+  if (policy === "local") return "local";
+  if (policy === "cloud") return "cloud";
+  return policy.join(", ");
 }

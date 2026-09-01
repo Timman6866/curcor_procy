@@ -37,7 +37,7 @@ export interface ConfigProvider {
 export interface SettingsView {
   defaultModel: string;
   runtime: Runtime;
-  toolsMode: "full" | "none" | "custom";
+  toolsMode: "local" | "cloud" | "custom";
   tools: string[];
   cwd: string;
   host: string;
@@ -70,7 +70,7 @@ export interface SettingsView {
 export interface SettingsUpdate {
   defaultModel?: string;
   runtime?: Runtime;
-  toolsMode?: "full" | "none" | "custom";
+  toolsMode?: "local" | "cloud" | "custom";
   tools?: string[];
   cwd?: string;
   proxyApiKey?: string | null;
@@ -125,7 +125,7 @@ function readPersistedSettings(path: string): PersistedSettings {
     if (!record) return {};
 
     const toolsPolicy = record.toolsPolicy !== undefined
-      ? parseToolsPolicyValue(record.toolsPolicy, "full")
+      ? parseToolsPolicyValue(record.toolsPolicy, "local")
       : undefined;
 
     return {

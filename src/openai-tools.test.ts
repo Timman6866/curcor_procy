@@ -14,7 +14,7 @@ const baseConfig: Config = {
   defaultModel: "composer-2.5",
   runtime: "local",
   cwd: "/tmp/scratch",
-  toolsPolicy: "none",
+  toolsPolicy: "cloud",
   adminUsername: "admin",
   adminPassword: undefined,
   logPolicy: "standard",

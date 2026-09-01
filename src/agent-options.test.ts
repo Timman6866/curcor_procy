@@ -12,7 +12,7 @@ const baseConfig: Config = {
   defaultModel: "composer-2.5",
   runtime: "local",
   cwd: "/tmp/scratch",
-  toolsPolicy: "full",
+  toolsPolicy: "local",
   adminUsername: "admin",
   adminPassword: undefined,
   logPolicy: "standard",
@@ -26,7 +26,7 @@ test("defaults to the full Cursor tool suite", () => {
 
 test("supports text-only mode on local agents", () => {
   const options = buildAgentOptions(
-    { ...baseConfig, toolsPolicy: "none" },
+    { ...baseConfig, toolsPolicy: "cloud" },
     "key",
     "composer-2.5",
   );
@@ -42,7 +42,7 @@ test("supports allowlisted tools on local agents", () => {
 
 test("does not pass tools arrays to cloud agents", () => {
   const options = buildAgentOptions(
-    { ...baseConfig, runtime: "cloud", toolsPolicy: "none" },
+    { ...baseConfig, runtime: "cloud", toolsPolicy: "cloud" },
     "key",
     "composer-2.5",
   );
@@ -97,7 +97,9 @@ test("parses connect CreateAgent tool options", () => {
 });
 
 test("parseToolsPolicy handles env-style values", () => {
-  assert.equal(parseToolsPolicy(undefined), "full");
-  assert.equal(parseToolsPolicy("none"), "none");
+  assert.equal(parseToolsPolicy(undefined), "local");
+  assert.equal(parseToolsPolicy("cloud"), "cloud");
+  assert.equal(parseToolsPolicy("full"), "local");
+  assert.equal(parseToolsPolicy("none"), "cloud");
   assert.deepEqual(parseToolsPolicy("read,grep,shell"), ["read", "grep", "shell"]);
 });
