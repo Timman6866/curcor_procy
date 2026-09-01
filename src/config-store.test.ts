@@ -16,7 +16,7 @@ const baseEnv: Config = {
   defaultModel: "composer-2.5",
   runtime: "local",
   cwd: "/tmp/proxy-test",
-  toolsPolicy: "full",
+  toolsPolicy: "local",
   adminUsername: "admin",
   adminPassword: "secret",
   logPolicy: "standard",
@@ -93,10 +93,10 @@ test("reset restores environment defaults", () => {
 
   try {
     const store = new ConfigStore(baseEnv, settingsPath, "generated-token");
-    store.applySettings({ toolsMode: "none" });
+    store.applySettings({ toolsMode: "cloud" });
     store.applySettings({ resetToEnv: true });
 
-    assert.equal(store.get().toolsPolicy, "full");
+    assert.equal(store.get().toolsPolicy, "local");
     assert.equal(readFileSync(settingsPath, "utf8").trim(), "{}");
   } finally {
     rmSync(dir, { recursive: true, force: true });

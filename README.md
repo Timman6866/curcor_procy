@@ -1,5 +1,7 @@
 # cursor-openai-proxy
 
+![Admin dashboard — health, config, models, and smoke tests](docs/admin-dashboard.png)
+
 OpenAI-compatible REST server that forwards chat traffic to Cursor models through the official SDK. Point any OpenAI client at it — `openai`, Continue, Cline, LangChain, Hermes, curl.
 
 It also exposes Cursor's official **`sdk.v1` Connect/protobuf** surface (the same wire contract as [`cursor-sdk-bridge`](https://github.com/cursor/sdk-bridge)), so non-TypeScript clients can speak native Cursor agent RPCs without embedding the SDK.
@@ -12,9 +14,9 @@ By default, agents get Cursor's full built-in toolset — the same capabilities 
 
 | Control | Effect |
 | --- | --- |
-| `CURSOR_TOOLS=full` (default) | Full suite |
-| `CURSOR_TOOLS=none` | Text-only (`tools: []`, **local only**) |
-| `CURSOR_TOOLS=read,grep,shell` | Allowlist (**local only**) |
+| `CURSOR_TOOLS=local` (default) | Full suite on local agent runs |
+| `CURSOR_TOOLS=cloud` | Text-only (`tools: []`, **local runtime only**) |
+| `CURSOR_TOOLS=read,grep,shell` | Allowlist (**local runtime only**) |
 | Connect `CreateAgent` `options.tools.names` | Per-agent override (local only) |
 | Connect `options.mcpServers` | Attach MCP servers to an agent |
 
@@ -237,7 +239,7 @@ Under the hood, the proxy:
 ## Behavior
 
 - OpenAI REST requests are one-shot agent runs. Send the full `messages` / `input` history each time.
-- Agents use the full Cursor tool suite by default; set `CURSOR_TOOLS=none` for text-only local runs.
+- Agents use the full Cursor tool suite by default (`CURSOR_TOOLS=local`); set `CURSOR_TOOLS=cloud` for text-only local runs.
 - Local runtime needs the Cursor agent executor on this machine. Use `CURSOR_RUNTIME=cloud` if you only have an API key.
 - Token counts are passed through when the SDK reports them; otherwise they are `0`.
 

@@ -17,7 +17,7 @@ services:
       # Use cloud if you omit the cursor-agent mount.
       CURSOR_RUNTIME: ${CURSOR_RUNTIME:-local}
       CURSOR_CWD: /workspace
-      CURSOR_TOOLS: ${CURSOR_TOOLS:-full}
+      CURSOR_TOOLS: ${CURSOR_TOOLS:-local}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     ports:

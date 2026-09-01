@@ -19,7 +19,7 @@ services:
       CONNECT_AUTH_TOKEN: ${CONNECT_AUTH_TOKEN:?CONNECT_AUTH_TOKEN is required for the no-log image}
       CURSOR_RUNTIME: ${CURSOR_RUNTIME:-cloud}
       CURSOR_CWD: /workspace
-      CURSOR_TOOLS: ${CURSOR_TOOLS:-full}
+      CURSOR_TOOLS: ${CURSOR_TOOLS:-local}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     ports:

@@ -16,7 +16,7 @@ const base: Config = {
   defaultModel: "composer-2.5",
   runtime: "local",
   cwd: "/tmp",
-  toolsPolicy: "full",
+  toolsPolicy: "local",
   adminUsername: "admin",
   adminPassword: undefined,
   logPolicy: "standard",

@@ -199,8 +199,8 @@ export const ADMIN_PAGE_HTML = `<!DOCTYPE html>
             <div class="field">
               <label>Tools policy <span id="sourceTools" class="pill source-pill"></span></label>
               <div class="segmented" id="toolsModeGroup">
-                <label><input type="radio" name="toolsMode" value="full" /> Full</label>
-                <label><input type="radio" name="toolsMode" value="none" /> None</label>
+                <label><input type="radio" name="toolsMode" value="local" /> Local</label>
+                <label><input type="radio" name="toolsMode" value="cloud" /> Cloud</label>
                 <label><input type="radio" name="toolsMode" value="custom" /> Custom</label>
               </div>
               <div id="toolsCustomPanel" class="tool-grid hidden"></div>

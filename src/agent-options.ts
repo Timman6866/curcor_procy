@@ -34,7 +34,7 @@ function parseToolsFromConnect(options: Record<string, unknown>, fallback: Tools
   const tools = asRecord(options.tools);
   if (!tools || !("names" in tools)) return fallback;
   if (!Array.isArray(tools.names)) return fallback;
-  if (tools.names.length === 0) return "none";
+  if (tools.names.length === 0) return "cloud";
   return tools.names.filter((name): name is string => typeof name === "string") as ToolName[];
 }
 
@@ -112,9 +112,9 @@ function applyToolsPolicy(
     return options;
   }
 
-  if (tools === "none") {
+  if (tools === "cloud") {
     options.tools = [];
-  } else if (tools !== "full") {
+  } else if (tools !== "local") {
     options.tools = tools;
   }
 
